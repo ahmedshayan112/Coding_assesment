@@ -462,7 +462,7 @@ function renderQuestionTabs() {
   state.challenges.forEach((c, idx) => {
     const btn = document.createElement("button");
     btn.className = `q-nav-tab ${idx === state.currentIndex ? "active" : ""}`;
-    btn.innerHTML = `Q${idx + 1} <span style="font-size: 10px; opacity: 0.7;">${(c.category || "AI").split('/')[0]}</span>`;
+    btn.innerHTML = `Task ${idx + 1} <span style="font-size: 10px; opacity: 0.7;">${(c.category || "AI").split('/')[0]}</span>`;
     btn.onclick = () => switchChallenge(idx);
     dom.questionTabs.appendChild(btn);
   });
@@ -485,7 +485,11 @@ function loadChallenge(index) {
   const challenge = state.challenges[index];
   if (!challenge) return;
 
-  if (dom.problemTitle) dom.problemTitle.textContent = challenge.title;
+  if (dom.problemTitle) {
+    const rawTitle = challenge.title || "Coding Challenge";
+    const cleanTitle = rawTitle.replace(/^(?:Task|Challenge|Question|Q)\s*\d+\s*:\s*/i, "");
+    dom.problemTitle.textContent = `Task ${index + 1}: ${cleanTitle}`;
+  }
 
   const diffClass = challenge.difficulty === "Easy" ? "tag-diff-easy" : (challenge.difficulty === "Hard" ? "tag-diff-hard" : "tag-diff-med");
   if (dom.problemTags) {
@@ -765,14 +769,23 @@ async function runSampleCode() {
 }
 
 function renderExecutionResults(execution) {
-  const { results, passed_count, total_count, stdout } = execution;
+  if (!execution) return;
+  const results = execution.results || execution.test_results || [];
+  const passed_count = execution.passed_count ?? 0;
+  const total_count = execution.total_count ?? results.length;
+  const stdout = execution.stdout || "";
 
-  dom.samplePassBadge.textContent = `${passed_count}/${total_count} Passed`;
-  dom.samplePassBadge.className = `badge-results ${passed_count === total_count ? "pass" : "fail"}`;
+  if (dom.samplePassBadge) {
+    dom.samplePassBadge.textContent = `${passed_count}/${total_count} Passed`;
+    dom.samplePassBadge.className = `badge-results ${passed_count === total_count ? "pass" : "fail"}`;
+  }
 
-  dom.stdoutBox.textContent = stdout ? stdout.trim() : "No print output (stdout is empty).";
+  if (dom.stdoutBox) {
+    dom.stdoutBox.textContent = stdout ? stdout.trim() : "No print output (stdout is empty).";
+  }
 
-  dom.testResultsList.innerHTML = results.map(r => `
+  if (dom.testResultsList) {
+    dom.testResultsList.innerHTML = results.map(r => `
     <div class="test-result-card ${r.status}">
       <div class="result-header">
         <span class="status-tag ${r.status}">

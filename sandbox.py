@@ -275,12 +275,15 @@ def run_sample_tests(candidate_code: str, sample_test_cases: list) -> Dict[str, 
             "explanation": tc.get("explanation")
         })
 
+    all_stdout = "\n".join(t["stdout"] for t in tests_summary if t.get("stdout")).strip()
     return {
         "all_passed": all_passed,
         "passed_count": sum(1 for t in tests_summary if t["status"] == "passed"),
         "total_count": len(tests_summary),
         "total_duration_ms": total_duration,
-        "test_results": tests_summary
+        "results": tests_summary,
+        "test_results": tests_summary,
+        "stdout": all_stdout
     }
 
 

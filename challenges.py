@@ -10,11 +10,11 @@ Supports:
 from typing import Dict, Any, List, Optional
 from jd_generator import generate_challenges_from_jd
 
-# Default benchmark challenges (Task 29 & Task 30)
+# Default benchmark challenges
 DEFAULT_CHALLENGES: List[Dict[str, Any]] = [
     {
         "id": "task-29-async-fastapi-debugging",
-        "title": "Task 29: Async/FastAPI Concurrency & Blocking Call Debugging",
+        "title": "Task 1: Async/FastAPI Concurrency & Blocking Call Debugging",
         "category": "Async Python / Backend Concurrency",
         "difficulty": "Medium",
         "time_limit_minutes": 15,
@@ -145,7 +145,7 @@ return await _run()""",
     },
     {
         "id": "task-30-vector-similarity-reranking",
-        "title": "Task 30: Vector Similarity & Cosine Reranking from Scratch",
+        "title": "Task 2: Vector Similarity & Cosine Reranking from Scratch",
         "category": "Machine Learning / Algorithms",
         "difficulty": "Medium",
         "time_limit_minutes": 15,
@@ -284,7 +284,7 @@ return [d["id"] for d in res]""",
     },
     {
         "id": "task-31-streaming-sliding-window",
-        "title": "Task 31: Real-Time Streaming Sliding Window Aggregator",
+        "title": "Task 3: Real-Time Streaming Sliding Window Aggregator",
         "category": "Data Engineering / Systems",
         "difficulty": "Medium",
         "time_limit_minutes": 10,
@@ -386,7 +386,7 @@ return agg.get_stats(current_time=12.0)""",
     },
     {
         "id": "task-32-rag-prompt-token-budget",
-        "title": "Task 32: LLM Prompt Context Window & Token Budget Optimizer",
+        "title": "Task 4: LLM Prompt Context Window & Token Budget Optimizer",
         "category": "AI / LLM Engineering",
         "difficulty": "Medium",
         "time_limit_minutes": 12,
@@ -542,7 +542,7 @@ return [m["content"] for m in res["messages"]]""",
     },
     {
         "id": "task-33-classification-metrics-evaluator",
-        "title": "Task 33: Classification Metrics & Confusion Matrix from Scratch",
+        "title": "Task 5: Classification Metrics & Confusion Matrix from Scratch",
         "category": "Machine Learning / Model Evaluation",
         "difficulty": "Medium",
         "time_limit_minutes": 10,
