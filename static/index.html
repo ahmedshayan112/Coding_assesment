@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StaffGenie — Generic Technical Coding Assessment</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dark-theme">
+  <!-- Top App Navigation -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo-box">
+        <span class="logo-icon">⚡</span>
+        <div class="logo-text">
+          <span class="logo-title">StaffGenie</span>
+          <span class="logo-subtitle">CodeSandbox</span>
+        </div>
+      </div>
+
+      <div class="session-info">
+        <span class="badge-role" id="roleBadge">AI / Backend Engineering</span>
+        <button id="openJdModalBtn" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; border-color: rgba(59,130,246,0.4); color: #60a5fa;" title="Generate assessment tailored to a specific Job Description">
+          ✨ Custom JD / Role
+        </button>
+      </div>
+    </div>
+
+    <!-- Question Selector Tabs -->
+    <div class="question-nav" id="questionTabs">
+      <!-- Injected dynamically: Q1, Q2, Q3 -->
+    </div>
+
+    <!-- Right Timer & Actions -->
+    <div class="header-right">
+      <div class="timer-box" id="timerBox">
+        <span class="timer-icon">⏳</span>
+        <span class="timer-text" id="countdownTimer">40:00</span>
+        <span class="timer-label">Remaining</span>
+      </div>
+
+      <button id="finishAssessmentBtn" class="btn-danger-outline" title="Finish and submit entire assessment">
+        Finish Assessment
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Split Sandbox Workspace -->
+  <main class="sandbox-container">
+    <!-- Left Pane: Problem Description & Proctoring Feed -->
+    <section class="pane-left">
+      <div class="pane-tabs">
+        <button class="pane-tab active" data-tab="description">Problem Statement</button>
+        <button class="pane-tab" data-tab="sampleTests">Sample Test Cases</button>
+        <button class="pane-tab" data-tab="proctoring">Proctoring Telemetry</button>
+      </div>
+
+      <div class="pane-body">
+        <!-- Tab 1: Description -->
+        <div class="tab-content active" id="tabDescription">
+          <div class="problem-header">
+            <h1 class="problem-title" id="problemTitle">Loading challenge...</h1>
+            <div class="problem-tags" id="problemTags"></div>
+          </div>
+          <div class="problem-markdown" id="problemMarkdown"></div>
+        </div>
+
+        <!-- Tab 2: Sample Test Cases -->
+        <div class="tab-content" id="tabSampleTests">
+          <div class="sample-tests-container" id="sampleTestsList"></div>
+        </div>
+
+        <!-- Tab 3: Proctoring Telemetry -->
+        <div class="tab-content" id="tabProctoring">
+          <div class="proctoring-detail-box">
+            <h3>Automated Interview Proctoring</h3>
+            <p>Your session is actively monitored for audio-visual integrity during technical problem-solving.</p>
+            <ul class="proctoring-check-list">
+              <li><span class="status-dot green"></span> Webcam feed active & stream recording</li>
+              <li><span class="status-dot green"></span> Real-time microphone audio visualizer</li>
+              <li><span class="status-dot green"></span> In-browser code runner telemetry</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Proctoring Mini Floating Card -->
+      <div class="proctor-widget" id="proctorWidget">
+        <div class="proctor-video-wrapper">
+          <video id="proctorVideo" autoplay playsinline muted></video>
+          <div class="proctor-badge">
+            <span class="pulsing-dot"></span> PROCTORED
+          </div>
+        </div>
+        <div class="proctor-audio-meter">
+          <span class="audio-label">🎙️ Mic</span>
+          <div class="audio-bars">
+            <span class="bar bar-1"></span>
+            <span class="bar bar-2"></span>
+            <span class="bar bar-3"></span>
+            <span class="bar bar-4"></span>
+            <span class="bar bar-5"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Pane: Code Editor & Execution Console -->
+    <section class="pane-right">
+      <!-- Editor Toolbar -->
+      <div class="editor-toolbar">
+        <div class="toolbar-left">
+          <span class="lang-tag">Python 3</span>
+          <span class="shortcut-tip">Tip: Press <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to run</span>
+        </div>
+        <div class="toolbar-right">
+          <button id="resetCodeBtn" class="btn-ghost" title="Reset code to original starter template">
+            ↺ Reset Starter Code
+          </button>
+        </div>
+      </div>
+
+      <!-- Editor Canvas -->
+      <div class="editor-canvas">
+        <div class="line-numbers" id="lineNumbers">1</div>
+        <textarea id="codeEditor" spellcheck="false" placeholder="# Write your Python solution here..."></textarea>
+      </div>
+
+      <!-- Execution Console & Results -->
+      <div class="console-drawer" id="consoleDrawer">
+        <div class="console-header">
+          <div class="console-tabs">
+            <button class="console-tab active" data-view="results">
+              Sample Results <span class="badge-results" id="samplePassBadge">0/0 Passed</span>
+            </button>
+            <button class="console-tab" data-view="logs">
+              Console Output (stdout)
+            </button>
+          </div>
+
+          <div class="console-actions">
+            <button id="runCodeBtn" class="btn-primary" title="Run against sample inputs (run n times)">
+              <span class="btn-icon">▶</span> Run Code
+            </button>
+            <button id="submitNextBtn" class="btn-success" title="Submit answer and advance to next challenge">
+              Submit & Next <span class="btn-icon">➔</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="console-body">
+          <!-- View 1: Test Results -->
+          <div class="console-view active" id="viewResults">
+            <div class="test-cards-list" id="testResultsList">
+              <div class="console-placeholder">
+                Click <strong>"Run Code"</strong> to test your solution against visible sample test cases. You can run as many times as needed before submitting.
+              </div>
+            </div>
+          </div>
+
+          <!-- View 2: Logs & Stdout -->
+          <div class="console-view" id="viewLogs">
+            <pre class="stdout-box" id="stdoutBox">No console output yet.</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Custom JD Generator Modal -->
+  <div class="modal-backdrop hidden" id="jdModal">
+    <div class="modal-card" style="max-width: 600px;">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="completion-icon">🎯</span>
+          <div>
+            <h2>Generate Assessment from Job Description</h2>
+            <p class="modal-subtitle">Use LLM to generate custom questions matching any candidate JD</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-body" style="padding: 20px;">
+        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Job Title</label>
+        <input type="text" id="jdJobTitle" value="Senior AI & FastAPI Engineer" style="width: 100%; background: #0c0f17; border: 1px solid var(--border-color); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px;">
+
+        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Job Description / Tech Stack</label>
+        <textarea id="jdDescriptionText" rows="6" style="width: 100%; background: #0c0f17; border: 1px solid var(--border-color); color: #fff; padding: 10px 12px; border-radius: 6px; font-size: 12.5px; font-family: var(--font-sans); margin-bottom: 14px;" placeholder="Paste job description, requirements, or core responsibilities here...">Looking for a Senior Python Engineer to build high-concurrency FastAPI microservices, vector search & semantic reranking for RAG pipelines, and real-time streaming telemetry.</textarea>
+
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+          <button type="button" class="btn-ghost preset-btn" data-title="Senior AI & FastAPI Engineer" data-desc="Build high-concurrency FastAPI microservices, vector similarity and cosine ranking for RAG, and real-time streaming pipelines.">Preset: AI / FastAPI</button>
+          <button type="button" class="btn-ghost preset-btn" data-title="Senior Data Platform Engineer" data-desc="Design real-time sliding window stream aggregations, event deduplication, and distributed data pipelines in Python.">Preset: Data Platform</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="closeJdModalBtn" class="btn-ghost">Cancel</button>
+        <button id="generateJdBtn" class="btn-primary">
+          ✨ Generate Tailored Assessment
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Final Scorecard & Evaluation Modal -->
+  <div class="modal-backdrop hidden" id="scorecardModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="completion-icon">🏆</span>
+          <div>
+            <h2>Technical Assessment Completed</h2>
+            <p class="modal-subtitle">Official candidate evaluation report & question breakdown</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-body" id="scorecardBody">
+        <div class="loading-spinner-box">
+          <p>Running comprehensive hidden test suites and evaluating code quality...</p>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="closeModalBtn" class="btn-ghost">Close Report</button>
+        <button id="downloadScorecardBtn" class="btn-primary">Download Scorecard (JSON)</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
