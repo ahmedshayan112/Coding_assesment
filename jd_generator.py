@@ -60,10 +60,19 @@ def generate_challenges_from_jd(
 
     try:
         system_prompt = (
-            "You are a Principal Technical Interview Architect designing timed in-browser coding assessments.\n"
+            "You are a Principal Technical Interview Architect designing timed (10-15 min) in-browser Python coding assessments.\n"
             "Your job is to generate realistic, production-oriented programming challenges strictly tailored to the "
             "provided Job Description (JD), required tech stack, and role expectations.\n"
-            "Always produce valid Python 3 code with realistic starter templates and executable sample and hidden test cases.\n"
+            "\n"
+            "CRITICAL CONSTRAINTS FOR IN-BROWSER CODING ASSESSMENTS:\n"
+            "1. NO EXTERNAL DATASETS OR FILES: Candidates code in an isolated in-browser Python sandbox without external file access, CSV/Parquet files, or internet downloads. NEVER ask the candidate to load external datasets from disk or download files.\n"
+            "2. ALL INPUT DATA MUST BE EMBEDDED INLINE OR PASSED AS ARGUMENTS: Provide realistic, rich sample inputs directly as function arguments or inline data structures (e.g. lists of document dictionaries, chat message arrays, telemetry event logs, prediction lists). All data must be available in pure Python without external files!\n"
+            "3. NO MODEL TRAINING OR FINE-TUNING: It is impossible to train neural networks or fine-tune models in a 15-minute browser sandbox. NEVER ask candidates to fine-tune an LLM, train PyTorch/TensorFlow weights, or load multi-gigabyte models.\n"
+            "4. REALISTIC, PRACTICAL INTERVIEW PROBLEMS:\n"
+            "   - If AI / ML / NLP / LLM: RAG vector cosine similarity & top-K reranking from scratch, prompt templating & token budget clipping, classification evaluation metrics (Precision/Recall/F1/Confusion Matrix from prediction lists), text tokenization & n-gram frequency extraction, or rule-based output guardrails.\n"
+            "   - If Backend / FastAPI: AsyncIO non-blocking concurrency & blocking call debugging, rate limiting (token bucket / sliding window), caching with TTL, request payload validation & sanitization, or batch error handling.\n"
+            "   - If Data Engineering: Real-time sliding window stats aggregation, stream deduplication, time-series resampling, or record schema transformation.\n"
+            "5. Pure Python Standard Library preferred. If math functions are needed, rely on `math` or standard collections (`collections`, `typing`, `asyncio`, `time`, `re`, `json`).\n"
             "You MUST output valid, parseable JSON conforming strictly to the requested schema."
         )
 
@@ -78,18 +87,15 @@ def generate_challenges_from_jd(
 --- TARGET DIFFICULTY ---
 {difficulty}
 
-REQUIREMENTS FOR EACH CHALLENGE:
-1. Real-World Context: Reflect actual production duties mentioned in the JD (e.g., if FastAPI/asyncio is required, include async concurrency/blocking I/O debugging; if vector search/embeddings, vector similarity from scratch; if data pipelines, stream/window aggregations).
-2. Starter Code: Valid Python code template for the candidate (either broken code to debug or a structured skeleton with docstrings).
-3. Reference Answer (Model Solution): Complete, correct working Python solution that passes all test cases.
-4. Sample Test Cases: Exactly 2 or 3 visible test cases so candidate can run their code 'n times'. Each test case must have:
-   - "id": string (e.g. "sample-1")
-   - "name": descriptive name
-   - "call": valid python expression or async snippet returning a value (e.g. "func(args)" or "await async_func(args)")
-   - "expected": expected result value (JSON-serializable)
-   - "explanation": brief note
-5. Hidden Test Cases: Exactly 3 or 4 hidden evaluation test cases with point weights summing to 100.
-6. Static Rules (optional): e.g. forbid 'time.sleep(' or forbid 'import numpy' where appropriate.
+CRITICAL RULES FOR EACH CHALLENGE:
+1. Self-Contained with Inline Input Data: All data must be passed directly as function arguments or provided inline as synthetic data structures (lists, dicts, strings). Do NOT ask the candidate to load any file or fine-tune models.
+2. Production-Relevant: Must solve a realistic software engineering or algorithm problem relevant to the JD that can be implemented in 10-15 minutes.
+3. Starter Code: Valid Python code template for the candidate (either broken code to debug or a structured skeleton with docstrings and type annotations).
+4. Reference Answer: Complete, correct working Python solution that passes all sample and hidden test cases.
+5. Sample Test Cases: Exactly 2 or 3 visible test cases where real sample input data is passed directly into the function call (e.g. `func([{{'id': '1', 'val': 10}}])`).
+6. Hidden Test Cases: Exactly 3 or 4 hidden evaluation test cases with point weights summing to 100, testing edge cases and correctness with inline inputs.
+7. Static Rules (optional): e.g. forbid 'time.sleep(' or forbid 'import numpy' where appropriate.
+8. Clean Markdown & Math: In 'description_markdown', write clean, highly readable Markdown with clear paragraphs. Do NOT write broken LaTeX like `ext{...}` or unescaped `\n`. For formulas, use clean readable mathematical notation (e.g. `cosine_similarity(A, B) = (A · B) / (‖A‖ * ‖B‖)`) or standard `$$` KaTeX delimiters.
 
 RETURN A JSON OBJECT WITH KEY 'challenges' CONTAINING AN ARRAY OF {num_questions} OBJECTS.
 SCHEMA FOR EACH OBJECT:
@@ -279,7 +285,35 @@ def extract_jd_competencies(jd_text: str) -> Dict[str, Any]:
 
 
 def _fallback_synthesize(job_title: str, job_description: str, difficulty: str) -> List[Dict[str, Any]]:
-    """Fallback synthesizer if network/API is unavailable."""
+    """Smart fallback synthesizer if network/API is unavailable: selects tailored benchmarks with inline data."""
     from challenges import DEFAULT_CHALLENGES
-    return DEFAULT_CHALLENGES
+    comp = extract_jd_competencies(f"{job_title} {job_description}")
+    
+    challenge_map = {c["id"]: c for c in DEFAULT_CHALLENGES}
+    
+    if comp.get("is_ai_ml"):
+        # Select AI/ML problems: Vector Reranking, Token Budget Truncation, Classification Metrics
+        selected_ids = [
+            "task-30-vector-similarity-reranking",
+            "task-32-rag-prompt-token-budget",
+            "task-33-classification-metrics-evaluator"
+        ]
+    elif comp.get("is_data_eng"):
+        # Select Data problems: Sliding Window Streaming, Vector Similarity, Async Concurrency
+        selected_ids = [
+            "task-31-streaming-sliding-window",
+            "task-30-vector-similarity-reranking",
+            "task-29-async-fastapi-debugging"
+        ]
+    else:
+        # Default Full-Stack / Backend suite
+        selected_ids = [
+            "task-29-async-fastapi-debugging",
+            "task-30-vector-similarity-reranking",
+            "task-32-rag-prompt-token-budget"
+        ]
+    
+    res = [challenge_map[cid] for cid in selected_ids if cid in challenge_map]
+    return res if len(res) >= 2 else DEFAULT_CHALLENGES[:3]
+
 

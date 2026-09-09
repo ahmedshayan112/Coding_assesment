@@ -383,6 +383,319 @@ return agg.get_stats(current_time=12.0)""",
             }
         ],
         "static_rules": []
+    },
+    {
+        "id": "task-32-rag-prompt-token-budget",
+        "title": "Task 32: LLM Prompt Context Window & Token Budget Optimizer",
+        "category": "AI / LLM Engineering",
+        "difficulty": "Medium",
+        "time_limit_minutes": 12,
+        "description_markdown": """### Problem Statement
+In production RAG (Retrieval-Augmented Generation) and conversational AI pipelines, user queries and chat history must be fitted into a fixed LLM context window without overflowing the model's token limit.
+
+You must implement a **Self-Contained Prompt Context Builder** in pure Python.
+**All chat records and system instructions are provided inline as arguments — no external files or datasets needed.**
+
+### Token Calculation
+Estimate token usage using the standard lightweight character heuristic:
+`token_count = math.ceil(len(text) / 4)` (where each 4 characters ≈ 1 token; empty string = 0 tokens).
+
+### Your Task
+Implement `build_prompt_context(system_prompt: str, messages: List[Dict[str, str]], max_tokens: int) -> Dict[str, Any]`:
+
+1. **System Prompt Preservation**:
+   - The `system_prompt` MUST always be included and is never truncated.
+   - If `estimate_tokens(system_prompt) > max_tokens`, raise `ValueError("System prompt exceeds max token budget")`.
+
+2. **Recent Message Prioritization (Sliding Context)**:
+   - Each message is a dict: `{"role": "user" | "assistant", "content": str}`.
+   - Messages must be included from newest (most recent at end of list) back towards oldest.
+   - If adding an older message would exceed `max_tokens` (including system prompt tokens + already selected messages), stop including older messages.
+   - The final included messages must be returned in **chronological order** (oldest of the selected to newest).
+
+3. **Output Format**:
+   Return a dictionary:
+   ```python
+   {
+       "system_prompt": system_prompt,
+       "messages": included_messages,
+       "total_tokens": int,         # Total tokens of system_prompt + included messages
+       "dropped_count": int         # Number of older messages that did not fit
+   }
+   ```
+
+### Constraints
+- Pure Python standard library (`math`, `typing`).
+- Do NOT import `tiktoken`, `transformers`, or `numpy`.
+""",
+        "starter_code": """import math
+from typing import List, Dict, Any
+
+def estimate_tokens(text: str) -> int:
+    \"\"\"Estimates token count: math.ceil(len(text) / 4)\"\"\"
+    if not text:
+        return 0
+    return math.ceil(len(text) / 4)
+
+def build_prompt_context(
+    system_prompt: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int
+) -> Dict[str, Any]:
+    \"\"\"
+    Builds a prompt context fitting within max_tokens budget.
+    Always includes system_prompt.
+    Prioritizes recent messages, preserving chronological order in the result.
+    \"\"\"
+    # TODO: Implement prompt context budgeting
+    pass
+""",
+        "sample_test_cases": [
+            {
+                "id": "sample-1",
+                "name": "All Messages Fit in Budget",
+                "call": """sys_p = "You are a helpful assistant."
+msgs = [
+    {"role": "user", "content": "Hi"},
+    {"role": "assistant", "content": "Hello!"}
+]
+return build_prompt_context(sys_p, msgs, max_tokens=100)""",
+                "expected": {
+                    "system_prompt": "You are a helpful assistant.",
+                    "messages": [
+                        {"role": "user", "content": "Hi"},
+                        {"role": "assistant", "content": "Hello!"}
+                    ],
+                    "total_tokens": 12,
+                    "dropped_count": 0
+                },
+                "explanation": "System (8 tokens) + msg1 (1 token) + msg2 (2 tokens) + remaining fits easily under 100."
+            },
+            {
+                "id": "sample-2",
+                "name": "Truncation of Older Messages",
+                "call": """sys_p = "System instruction" # 5 tokens (18 chars -> 5 tokens)
+msgs = [
+    {"role": "user", "content": "Old message 1234567890"}, # 6 tokens
+    {"role": "user", "content": "Recent message here"}     # 5 tokens
+]
+# max_tokens = 12 allows sys_p (5) + Recent (5) = 10 tokens. Old (6) is dropped!
+return build_prompt_context(sys_p, msgs, max_tokens=12)""",
+                "expected": {
+                    "system_prompt": "System instruction",
+                    "messages": [
+                        {"role": "user", "content": "Recent message here"}
+                    ],
+                    "total_tokens": 10,
+                    "dropped_count": 1
+                },
+                "explanation": "Only the newest message fits alongside the system prompt."
+            }
+        ],
+        "hidden_test_cases": [
+            {
+                "id": "hidden-1",
+                "name": "System Prompt Exceeds Total Budget",
+                "weight": 25,
+                "call": """try:
+    build_prompt_context("A" * 100, [], max_tokens=10)
+    return False
+except ValueError:
+    return True""",
+                "expected": True
+            },
+            {
+                "id": "hidden-2",
+                "name": "Empty History Handling",
+                "weight": 25,
+                "call": """res = build_prompt_context("Assistant", [], max_tokens=50)
+return {"dropped": res["dropped_count"], "count": len(res["messages"])}""",
+                "expected": {"dropped": 0, "count": 0}
+            },
+            {
+                "id": "hidden-3",
+                "name": "Multi-Turn Dialogue Chronological Preservation",
+                "weight": 35,
+                "call": """sys_p = "Bot" # 1 token
+msgs = [
+    {"role": "user", "content": "turn1_long_query_1234"},  # 6 tokens
+    {"role": "assistant", "content": "turn2_reply_123"},   # 4 tokens
+    {"role": "user", "content": "turn3_short"}             # 3 tokens
+]
+# Budget: 9 tokens -> fits Bot (1) + turn3 (3) + turn2 (4) = 8 tokens. turn1 is dropped.
+res = build_prompt_context(sys_p, msgs, max_tokens=9)
+return [m["content"] for m in res["messages"]]""",
+                "expected": ["turn2_reply_123", "turn3_short"]
+            },
+            {
+                "id": "hidden-4",
+                "name": "No External Tokenizer Libraries",
+                "weight": 15,
+                "type": "static_check",
+                "check": "no_external_tokenizers",
+                "description": "Code must not import tiktoken or transformers."
+            }
+        ],
+        "static_rules": [
+            {"type": "forbid_pattern", "pattern": r"\b(import\s+tiktoken|from\s+tiktoken|import\s+transformers)\b", "message": "External tokenization library detected! Rely on the lightweight pure Python estimator provided."}
+        ]
+    },
+    {
+        "id": "task-33-classification-metrics-evaluator",
+        "title": "Task 33: Classification Metrics & Confusion Matrix from Scratch",
+        "category": "Machine Learning / Model Evaluation",
+        "difficulty": "Medium",
+        "time_limit_minutes": 10,
+        "description_markdown": """### Problem Statement
+In production AI evaluation pipelines, candidate model outputs are scored against ground-truth labels.
+
+You must implement an **Evaluation Metrics Calculator** in pure Python.
+**All ground-truth labels and model prediction arrays are provided directly as Python lists — no external dataset files or libraries needed.**
+
+### Your Task
+Implement `evaluate_predictions(y_true: List[int], y_pred: List[int]) -> Dict[str, Any]`:
+
+1. **Input Validation**:
+   - Binary class labels: values are `0` (Negative) or `1` (Positive).
+   - If `len(y_true) != len(y_pred)` or `len(y_true) == 0`:
+     Raise `ValueError("y_true and y_pred must have identical non-zero length")`.
+
+2. **Confusion Matrix Calculations**:
+   - `tp` (True Positives): actual == 1 and predicted == 1
+   - `fp` (False Positives): actual == 0 and predicted == 1
+   - `tn` (True Negatives): actual == 0 and predicted == 0
+   - `fn` (False Negatives): actual == 1 and predicted == 0
+
+3. **Metrics (Rounded to 4 Decimals)**:
+   - `accuracy = (tp + tn) / total`
+   - `precision = tp / (tp + fp)` if `(tp + fp) > 0` else `0.0`
+   - `recall = tp / (tp + fn)` if `(tp + fn) > 0` else `0.0`
+   - `f1_score = 2 * precision * recall / (precision + recall)` if `(precision + recall) > 0` else `0.0`
+
+4. **Return Dictionary**:
+   ```python
+   {
+       "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+       "accuracy": round(accuracy, 4),
+       "precision": round(precision, 4),
+       "recall": round(recall, 4),
+       "f1_score": round(f1_score, 4)
+   }
+   ```
+
+### Constraints
+- Pure Python standard library only.
+- Do NOT import `sklearn`, `scipy`, or `numpy`.
+""",
+        "starter_code": """from typing import List, Dict, Any
+
+def evaluate_predictions(y_true: List[int], y_pred: List[int]) -> Dict[str, Any]:
+    \"\"\"
+    Computes confusion matrix and classification metrics (accuracy, precision, recall, f1_score).
+    All data is passed directly via y_true and y_pred lists.
+    Float metrics are rounded to 4 decimal places.
+    \"\"\"
+    # TODO: Implement classification metrics evaluation
+    pass
+""",
+        "sample_test_cases": [
+            {
+                "id": "sample-1",
+                "name": "Standard Binary Predictions Evaluation",
+                "call": """y_t = [1, 0, 1, 1, 0, 1, 0, 0]
+y_p = [1, 0, 1, 0, 0, 1, 1, 0]
+return evaluate_predictions(y_t, y_p)""",
+                "expected": {
+                    "tp": 3,
+                    "fp": 1,
+                    "tn": 3,
+                    "fn": 1,
+                    "accuracy": 0.75,
+                    "precision": 0.75,
+                    "recall": 0.75,
+                    "f1_score": 0.75
+                },
+                "explanation": "Total 8 items: TP=3, FP=1, TN=3, FN=1. Accuracy=6/8=0.75."
+            },
+            {
+                "id": "sample-2",
+                "name": "Perfect 100% Classifier",
+                "call": """y_t = [1, 1, 0, 0]
+y_p = [1, 1, 0, 0]
+return evaluate_predictions(y_t, y_p)""",
+                "expected": {
+                    "tp": 2,
+                    "fp": 0,
+                    "tn": 2,
+                    "fn": 0,
+                    "accuracy": 1.0,
+                    "precision": 1.0,
+                    "recall": 1.0,
+                    "f1_score": 1.0
+                },
+                "explanation": "Perfect predictions yield 1.0 for all metrics."
+            }
+        ],
+        "hidden_test_cases": [
+            {
+                "id": "hidden-1",
+                "name": "Length Mismatch Exception",
+                "weight": 20,
+                "call": """try:
+    evaluate_predictions([1, 0], [1, 0, 1])
+    return False
+except ValueError:
+    return True""",
+                "expected": True
+            },
+            {
+                "id": "hidden-2",
+                "name": "Zero Division Safety (All Predicted Negative)",
+                "weight": 30,
+                "call": """# When all predictions are 0, tp=0, fp=0 -> precision must safely be 0.0, not ZeroDivisionError
+return evaluate_predictions([1, 1, 0], [0, 0, 0])""",
+                "expected": {
+                    "tp": 0,
+                    "fp": 0,
+                    "tn": 1,
+                    "fn": 2,
+                    "accuracy": 0.3333,
+                    "precision": 0.0,
+                    "recall": 0.0,
+                    "f1_score": 0.0
+                }
+            },
+            {
+                "id": "hidden-3",
+                "name": "Skewed Dataset Metrics Calculation",
+                "weight": 35,
+                "call": """y_t = [1, 1, 1, 1, 0, 0]
+y_p = [1, 1, 0, 0, 0, 0]
+# TP=2, FP=0, TN=2, FN=2. Total=6. Acc=4/6=0.6667. Prec=2/2=1.0. Rec=2/4=0.5. F1=2*(1*0.5)/(1.5)=0.6667
+return evaluate_predictions(y_t, y_p)""",
+                "expected": {
+                    "tp": 2,
+                    "fp": 0,
+                    "tn": 2,
+                    "fn": 2,
+                    "accuracy": 0.6667,
+                    "precision": 1.0,
+                    "recall": 0.5,
+                    "f1_score": 0.6667
+                }
+            },
+            {
+                "id": "hidden-4",
+                "name": "No External Machine Learning Libraries",
+                "weight": 15,
+                "type": "static_check",
+                "check": "no_sklearn_libs",
+                "description": "Code must implement metrics from scratch without sklearn or numpy."
+            }
+        ],
+        "static_rules": [
+            {"type": "forbid_pattern", "pattern": r"\b(import\s+sklearn|from\s+sklearn|import\s+scipy)\b", "message": "External library detected! Pure Python implementation required."}
+        ]
     }
 ]
 
@@ -427,12 +740,19 @@ def get_public_challenges(session_id: str = "default") -> List[Dict[str, Any]]:
 
 
 def get_challenge_by_id(challenge_id: str, session_id: str = "default") -> Optional[Dict[str, Any]]:
+    # 1. Search in specified session
     active = get_active_challenges(session_id)
     for c in active:
         if c["id"] == challenge_id:
             return c
-    # Fallback to defaults
+    # 2. Search in all active sessions in store
+    for sid, s_list in _CHALLENGES_STORE.items():
+        for c in s_list:
+            if c["id"] == challenge_id:
+                return c
+    # 3. Fallback to defaults
     for c in DEFAULT_CHALLENGES:
         if c["id"] == challenge_id:
             return c
     return None
+

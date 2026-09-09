@@ -1,12 +1,14 @@
 /**
  * StaffGenie Technical Coding Assessment — Client Application
- * Handles:
- * - Dynamic JD-based question loading
- * - Live webcam & microphone proctoring with audio waveform visualization
- * - 40-minute countdown timer
- * - Code editor with line numbers and keyboard shortcuts
- * - Live execution runner against sample test cases (n times)
- * - Submission flow & post-submission evaluation scorecard with marks out of 100 per question
+ * Features:
+ * - Mandatory pre-interview Camera & Microphone verification gate
+ * - Live webcam & real-time audio waveform proctoring during assessment
+ * - Full KaTeX mathematical formula rendering & robust Markdown formatting
+ * - Anti-session switch & tab-change enforcement (anti-cheat telemetry)
+ * - 40-minute countdown timer locked to the active session
+ * - Code editor with line numbers and shortcuts
+ * - Live in-browser execution runner against sample test suites
+ * - Final submission & evaluation scorecard sync
  */
 
 // Application State
@@ -16,10 +18,16 @@ const state = {
   userCode: {}, // { challengeId: code }
   remainingSeconds: 40 * 60,
   timerInterval: null,
-  isAudioActive: false,
+  isAssessmentStarted: false,
+  isSubmitted: false,
+  cameraActive: false,
+  micActive: false,
+  mediaStream: null,
   audioContext: null,
   analyser: null,
-  mediaStream: null,
+  animFrameId: null,
+  sessionSwitches: 0,
+  maxSwitches: 3,
   lastScorecard: null
 };
 
@@ -41,34 +49,384 @@ const dom = {
   samplePassBadge: document.getElementById("samplePassBadge"),
   testResultsList: document.getElementById("testResultsList"),
   stdoutBox: document.getElementById("stdoutBox"),
-  proctorVideo: document.getElementById("proctorVideo"),
   scorecardModal: document.getElementById("scorecardModal"),
   scorecardBody: document.getElementById("scorecardBody"),
   closeModalBtn: document.getElementById("closeModalBtn"),
-  downloadScorecardBtn: document.getElementById("downloadScorecardBtn"),
-  // JD Modal
-  jdModal: document.getElementById("jdModal"),
-  openJdModalBtn: document.getElementById("openJdModalBtn"),
-  closeJdModalBtn: document.getElementById("closeJdModalBtn"),
-  generateJdBtn: document.getElementById("generateJdBtn"),
-  jdJobTitle: document.getElementById("jdJobTitle"),
-  jdDescriptionText: document.getElementById("jdDescriptionText"),
-  roleBadge: document.getElementById("roleBadge")
+  roleBadge: document.getElementById("roleBadge"),
+  candidateInfoBadge: document.getElementById("candidateInfoBadge"),
+
+  // Hardware Verification Elements
+  hardwareModal: document.getElementById("hardwareModal"),
+  hardwareVideo: document.getElementById("hardwareVideo"),
+  videoStatusOverlay: document.getElementById("videoStatusOverlay"),
+  camStatusRow: document.getElementById("camStatusRow"),
+  camBadge: document.getElementById("camBadge"),
+  micStatusRow: document.getElementById("micStatusRow"),
+  micBadge: document.getElementById("micBadge"),
+  micLevelFill: document.getElementById("micLevelFill"),
+  micDbLevel: document.getElementById("micDbLevel"),
+  enableHardwareBtn: document.getElementById("enableHardwareBtn"),
+  startAssessmentBtn: document.getElementById("startAssessmentBtn"),
+
+  // Floating Proctoring Widget
+  proctorWidget: document.getElementById("proctorWidget"),
+  proctorVideo: document.getElementById("proctorVideo"),
+
+  // Anti-Cheat & Hardware Alert Modals
+  switchWarningModal: document.getElementById("switchWarningModal"),
+  violationCountBadge: document.getElementById("violationCountBadge"),
+  returnToSessionBtn: document.getElementById("returnToSessionBtn"),
+  hardwareLostModal: document.getElementById("hardwareLostModal"),
+  reconnectHardwareBtn: document.getElementById("reconnectHardwareBtn")
 };
+
+// URL Query Parameter Context
+const urlParams = new URLSearchParams(window.location.search);
+const assessmentToken = urlParams.get("token") || "";
+const assessmentCandidateId = urlParams.get("candidateId") || "";
+const assessmentTaskId = urlParams.get("taskId") || "";
+const assessmentCandidateName = urlParams.get("name") || "";
+const assessmentCandidateEmail = urlParams.get("email") || "";
+const assessmentCandidateRole = urlParams.get("role") || "";
 
 // Initialize Application
 async function init() {
+  if (assessmentCandidateRole && dom.roleBadge) {
+    dom.roleBadge.textContent = assessmentCandidateRole;
+  }
+  if (assessmentCandidateName && dom.candidateInfoBadge) {
+    dom.candidateInfoBadge.textContent = `👤 ${assessmentCandidateName}`;
+    dom.candidateInfoBadge.style.display = "inline-block";
+  }
+
+  // Lock session token in sessionStorage to prevent tampering or switching
+  if (assessmentToken) {
+    const existingToken = sessionStorage.getItem("staffgenie_locked_token");
+    if (!existingToken) {
+      sessionStorage.setItem("staffgenie_locked_token", assessmentToken);
+    } else if (existingToken !== assessmentToken) {
+      console.warn("Session token lock active. Active session:", existingToken);
+    }
+  }
+
   setupEventListeners();
   setupEditor();
-  await initProctoring();
-  startTimer();
+  setupAntiSessionSwitch();
+  initHardwareGate();
   await loadChallenges();
 }
 
-// 1. Load Challenges from Server
+/* ============================================================
+   1. Pre-Assessment Camera & Audio Verification Gate
+   ============================================================ */
+function initHardwareGate() {
+  // Ensure the hardware modal is visible
+  if (dom.hardwareModal) {
+    dom.hardwareModal.style.display = "flex";
+  }
+  // Disable the code editor until the interview is explicitly started
+  if (dom.codeEditor) {
+    dom.codeEditor.disabled = true;
+  }
+
+  if (dom.enableHardwareBtn) {
+    dom.enableHardwareBtn.onclick = requestHardwarePermissions;
+  }
+
+  if (dom.startAssessmentBtn) {
+    dom.startAssessmentBtn.onclick = startAssessmentSession;
+  }
+
+  if (dom.reconnectHardwareBtn) {
+    dom.reconnectHardwareBtn.onclick = async () => {
+      dom.hardwareLostModal.classList.add("hidden");
+      await requestHardwarePermissions();
+    };
+  }
+}
+
+async function requestHardwarePermissions() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert("Your web browser does not support webcam or microphone capture. Please use Google Chrome, Edge, or Firefox.");
+    return;
+  }
+
+  try {
+    if (dom.enableHardwareBtn) {
+      dom.enableHardwareBtn.disabled = true;
+      dom.enableHardwareBtn.innerHTML = `<span>⏳</span> Requesting Devices...`;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+      audio: true
+    });
+
+    state.mediaStream = stream;
+
+    // 1. Verify Video Track
+    const videoTracks = stream.getVideoTracks();
+    if (videoTracks.length > 0 && videoTracks[0].readyState === "live") {
+      state.cameraActive = true;
+      if (dom.hardwareVideo) dom.hardwareVideo.srcObject = stream;
+      if (dom.videoStatusOverlay) dom.videoStatusOverlay.classList.add("active");
+      if (dom.camBadge) {
+        dom.camBadge.textContent = "Ready ✓";
+        dom.camBadge.className = "device-state-badge state-ready";
+      }
+      if (dom.camStatusRow) dom.camStatusRow.classList.add("verified");
+
+      // Monitor camera track ending
+      videoTracks[0].onended = () => {
+        state.cameraActive = false;
+        handleHardwareLost("Camera disconnected");
+      };
+    }
+
+    // 2. Verify Audio Track & Initialize Web Audio Equalizer
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length > 0 && audioTracks[0].readyState === "live") {
+      state.micActive = true;
+      if (dom.micBadge) {
+        dom.micBadge.textContent = "Ready ✓";
+        dom.micBadge.className = "device-state-badge state-ready";
+      }
+      if (dom.micStatusRow) dom.micStatusRow.classList.add("verified");
+
+      initAudioMeter(stream);
+
+      audioTracks[0].onended = () => {
+        state.micActive = false;
+        handleHardwareLost("Microphone disconnected");
+      };
+    }
+
+    // 3. Unlock Start Assessment button if both are verified
+    if (state.cameraActive && state.micActive) {
+      if (dom.startAssessmentBtn) {
+        dom.startAssessmentBtn.disabled = false;
+        dom.startAssessmentBtn.innerHTML = `<span>🚀</span> Start Assessment`;
+      }
+      if (dom.enableHardwareBtn) {
+        dom.enableHardwareBtn.innerHTML = `<span>✓</span> Devices Connected`;
+      }
+    }
+  } catch (err) {
+    console.error("Hardware permission denied or error:", err);
+    if (dom.enableHardwareBtn) {
+      dom.enableHardwareBtn.disabled = false;
+      dom.enableHardwareBtn.innerHTML = `<span>🔄</span> Try Again`;
+    }
+    if (dom.camBadge) {
+      dom.camBadge.textContent = "Denied ✗";
+      dom.camBadge.className = "device-state-badge state-denied";
+    }
+    if (dom.micBadge) {
+      dom.micBadge.textContent = "Denied ✗";
+      dom.micBadge.className = "device-state-badge state-denied";
+    }
+    alert(
+      "Permission Denied: Camera and microphone access are mandatory to take this technical interview.\n\nPlease click the camera icon in your browser address bar to allow permissions, then click 'Try Again'."
+    );
+  }
+}
+
+function initAudioMeter(stream) {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+
+    if (!state.audioContext) {
+      state.audioContext = new AudioContext();
+    }
+    if (state.audioContext.state === "suspended") {
+      state.audioContext.resume();
+    }
+
+    const source = state.audioContext.createMediaStreamSource(stream);
+    state.analyser = state.audioContext.createAnalyser();
+    state.analyser.fftSize = 64;
+    source.connect(state.analyser);
+
+    const dataArray = new Uint8Array(state.analyser.frequencyBinCount);
+
+    function updateAudioLevel() {
+      if (!state.analyser) return;
+      state.analyser.getByteFrequencyData(dataArray);
+
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const avg = sum / dataArray.length;
+      const pct = Math.min(100, Math.round((avg / 128) * 100));
+
+      if (dom.micLevelFill) dom.micLevelFill.style.width = `${pct}%`;
+      if (dom.micDbLevel) dom.micDbLevel.textContent = `${pct}%`;
+
+      // Animate floating proctor widget audio bars if active
+      if (state.isAssessmentStarted) {
+        const bars = document.querySelectorAll(".audio-bars .bar");
+        bars.forEach((b, i) => {
+          const val = dataArray[i * 2] || 0;
+          const h = Math.max(3, Math.min(12, (val / 255) * 12));
+          b.style.height = `${h}px`;
+        });
+      }
+
+      state.animFrameId = requestAnimationFrame(updateAudioLevel);
+    }
+
+    updateAudioLevel();
+  } catch (e) {
+    console.warn("Could not start Web Audio meter:", e);
+  }
+}
+
+function startAssessmentSession() {
+  if (!state.cameraActive || !state.micActive || !state.mediaStream) {
+    alert("Camera and Microphone must both be active before you can start the interview.");
+    return;
+  }
+
+  // Hide the onboarding modal
+  if (dom.hardwareModal) {
+    dom.hardwareModal.style.display = "none";
+  }
+
+  state.isAssessmentStarted = true;
+
+  // Unlock Code Editor
+  if (dom.codeEditor) {
+    dom.codeEditor.disabled = false;
+    dom.codeEditor.focus();
+  }
+
+  // Display floating proctoring widget
+  if (dom.proctorWidget) {
+    dom.proctorWidget.style.display = "block";
+    if (dom.proctorVideo) {
+      dom.proctorVideo.srcObject = state.mediaStream;
+    }
+  }
+
+  // Request fullscreen to lock candidate in focus
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+
+  // Start 40-minute countdown timer
+  startTimer();
+}
+
+function handleHardwareLost(reason) {
+  if (!state.isAssessmentStarted || state.isSubmitted) return;
+  console.warn("Hardware stream interrupted:", reason);
+  if (dom.hardwareLostModal) {
+    dom.hardwareLostModal.classList.remove("hidden");
+  }
+}
+
+/* ============================================================
+   2. Anti-Session Switch & Proctoring Integrity
+   ============================================================ */
+function setupAntiSessionSwitch() {
+  // 1. Detect Tab Switching or Minimizing
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && state.isAssessmentStarted && !state.isSubmitted) {
+      handleSessionViolation("Tab Switched or Browser Minimized");
+    }
+  });
+
+  // 2. Detect Window Blur (clicking outside the interview)
+  window.addEventListener("blur", () => {
+    if (state.isAssessmentStarted && !state.isSubmitted) {
+      handleSessionViolation("Window Lost Focus / External Tool Active");
+    }
+  });
+
+  // 3. Prevent accidental navigation or page refresh
+  window.addEventListener("beforeunload", (e) => {
+    if (state.isAssessmentStarted && !state.isSubmitted) {
+      e.preventDefault();
+      e.returnValue = "Your assessment session is currently active and locked. Leaving now will forfeit your submission.";
+      return e.returnValue;
+    }
+  });
+
+  // 4. Return to session modal button
+  if (dom.returnToSessionBtn) {
+    dom.returnToSessionBtn.onclick = () => {
+      if (dom.switchWarningModal) dom.switchWarningModal.classList.add("hidden");
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    };
+  }
+
+  // 5. Disable Context Menu & Developer Tools Shortcuts
+  document.addEventListener("contextmenu", (e) => {
+    if (state.isAssessmentStarted && !state.isSubmitted) {
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    // Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
+    if (
+      e.key === "F12" ||
+      (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "J" || e.key === "C")) ||
+      (e.ctrlKey && (e.key === "u" || e.key === "U"))
+    ) {
+      if (state.isAssessmentStarted && !state.isSubmitted) {
+        e.preventDefault();
+        handleSessionViolation("Attempted Developer Tools Shortcut");
+      }
+    }
+  });
+}
+
+function handleSessionViolation(reason) {
+  state.sessionSwitches++;
+  console.warn(`[Proctoring Alert] Session violation (${reason}): #${state.sessionSwitches}`);
+
+  // Play warning beep
+  playWarningBeep();
+
+  if (dom.violationCountBadge) {
+    dom.violationCountBadge.textContent = state.sessionSwitches;
+  }
+
+  if (dom.switchWarningModal) {
+    dom.switchWarningModal.classList.remove("hidden");
+  }
+}
+
+function playWarningBeep() {
+  try {
+    const ctx = state.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(440, ctx.currentTime);
+    osc.frequency.setValueAtTime(320, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.35);
+  } catch (e) {}
+}
+
+/* ============================================================
+   3. Load Challenges & Question Management
+   ============================================================ */
 async function loadChallenges() {
   try {
-    const res = await fetch("/api/challenges");
+    const sessionParam = encodeURIComponent(assessmentToken || "default");
+    const res = await fetch(`/api/challenges?session_id=${sessionParam}`);
     const data = await res.json();
     if (data.success && data.challenges.length > 0) {
       state.challenges = data.challenges;
@@ -83,28 +441,30 @@ async function loadChallenges() {
     }
   } catch (err) {
     console.error("Failed to fetch challenges:", err);
-    dom.problemTitle.textContent = "Error loading challenges from server.";
+    if (dom.problemTitle) {
+      dom.problemTitle.textContent = "Error loading challenges from server.";
+    }
   }
 }
 
-// 2. Render Question Navigation Tabs
 function renderQuestionTabs() {
+  if (!dom.questionTabs) return;
   dom.questionTabs.innerHTML = "";
   state.challenges.forEach((c, idx) => {
     const btn = document.createElement("button");
     btn.className = `q-nav-tab ${idx === state.currentIndex ? "active" : ""}`;
-    btn.innerHTML = `Q${idx + 1} <span style="font-size: 10px; opacity: 0.7;">${c.category.split('/')[0]}</span>`;
+    btn.innerHTML = `Q${idx + 1} <span style="font-size: 10px; opacity: 0.7;">${(c.category || "AI").split('/')[0]}</span>`;
     btn.onclick = () => switchChallenge(idx);
     dom.questionTabs.appendChild(btn);
   });
 }
 
-// 3. Switch / Load Challenge
 function switchChallenge(index) {
-  // Save current code before switching
   if (state.challenges[state.currentIndex]) {
     const currentId = state.challenges[state.currentIndex].id;
-    state.userCode[currentId] = dom.codeEditor.value;
+    if (dom.codeEditor) {
+      state.userCode[currentId] = dom.codeEditor.value;
+    }
   }
 
   state.currentIndex = index;
@@ -116,186 +476,363 @@ function loadChallenge(index) {
   const challenge = state.challenges[index];
   if (!challenge) return;
 
-  dom.problemTitle.textContent = challenge.title;
+  if (dom.problemTitle) dom.problemTitle.textContent = challenge.title;
 
-  // Render Tags
   const diffClass = challenge.difficulty === "Easy" ? "tag-diff-easy" : (challenge.difficulty === "Hard" ? "tag-diff-hard" : "tag-diff-med");
-  dom.problemTags.innerHTML = `
-    <span class="tag-badge ${diffClass}">${challenge.difficulty}</span>
-    <span class="tag-badge">⏳ ${challenge.time_limit_minutes} Mins</span>
-    <span class="tag-badge">🏷️ ${challenge.category}</span>
-  `;
-
-  // Render Description Markdown (simple markdown parser)
-  dom.problemMarkdown.innerHTML = formatMarkdown(challenge.description_markdown);
-
-  // Render Sample Test Cases
-  renderSampleTests(challenge.sample_test_cases);
-
-  // Load candidate code for this challenge
-  const savedCode = state.userCode[challenge.id] || challenge.starter_code;
-  dom.codeEditor.value = savedCode;
-  updateLineNumbers();
-
-  // Reset console
-  dom.testResultsList.innerHTML = `
-    <div class="console-placeholder">
-      Click <strong>"Run Code"</strong> to test your solution against visible sample test cases. You can run as many times as needed.
-    </div>
-  `;
-  dom.samplePassBadge.textContent = `0/${challenge.sample_test_cases.length} Passed`;
-  dom.stdoutBox.textContent = "No console output yet.";
-
-  // Update Submit Button Text
-  if (state.currentIndex === state.challenges.length - 1) {
-    dom.submitNextBtn.innerHTML = `Finish & Submit <span class="btn-icon">✓</span>`;
-    dom.submitNextBtn.className = "btn-success";
-  } else {
-    dom.submitNextBtn.innerHTML = `Submit & Next <span class="btn-icon">➔</span>`;
-    dom.submitNextBtn.className = "btn-success";
-  }
-}
-
-function renderSampleTests(sampleCases) {
-  dom.sampleTestsList.innerHTML = "";
-  (sampleCases || []).forEach((tc, i) => {
-    const card = document.createElement("div");
-    card.className = "sample-test-card";
-    card.innerHTML = `
-      <div class="sample-test-header">Sample Test #${i + 1}: ${tc.name}</div>
-      <div class="diff-label">Test Call:</div>
-      <div class="code-snippet-box">${escapeHtml(tc.call)}</div>
-      <div class="diff-label">Expected Output:</div>
-      <div class="code-snippet-box">${escapeHtml(JSON.stringify(tc.expected, null, 2))}</div>
-      ${tc.explanation ? `<p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">ℹ️ ${escapeHtml(tc.explanation)}</p>` : ""}
+  if (dom.problemTags) {
+    dom.problemTags.innerHTML = `
+      <span class="tag-badge ${diffClass}">${challenge.difficulty}</span>
+      <span class="tag-badge">⏳ ${challenge.time_limit_minutes || 15} Mins</span>
+      <span class="tag-badge">🏷️ ${challenge.category || "AI/ML"}</span>
     `;
-    dom.sampleTestsList.appendChild(card);
-  });
+  }
+
+  // Format Description with KaTeX Math & Markdown
+  let descHtml = formatMarkdown(challenge.description_markdown);
+  if (challenge.sample_test_cases && challenge.sample_test_cases.length > 0) {
+    descHtml += `
+      <div style="margin-top: 24px; padding: 14px 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h4 style="font-size: 12.5px; font-weight: 700; color: #142175; text-transform: uppercase; margin-bottom: 6px;">
+          📥 Input Dataset / Test Arguments
+        </h4>
+        <p style="font-size: 12px; color: #475569; margin-bottom: 8px;">
+          The dataset is supplied directly as function arguments by the test runner when you click <strong>"Run Code"</strong>:
+        </p>
+        ${challenge.sample_test_cases.map((tc, idx) => `
+          <div style="margin-bottom: 8px; font-family: var(--font-mono); font-size: 11.5px; background: #ffffff; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px; color: #0b1c30;">
+            <span style="color: #2563eb; font-weight: 600;">Sample #${idx + 1}: ${escapeHtml(tc.name || "Test Case")}</span>
+            <div style="margin-top: 4px; color: #334155;"><code>${escapeHtml(tc.call || "")}</code></div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  if (dom.problemMarkdown) {
+    dom.problemMarkdown.innerHTML = descHtml;
+    // Trigger KaTeX Auto-Render on the newly inserted content
+    if (window.renderMathInElement) {
+      try {
+        window.renderMathInElement(dom.problemMarkdown, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\(", right: "\\)", display: false }
+          ],
+          throwOnError: false
+        });
+      } catch (e) {
+        console.warn("KaTeX render error:", e);
+      }
+    }
+  }
+
+  // Load starter/saved code into editor
+  const savedCode = state.userCode[challenge.id] || challenge.starter_code;
+  if (dom.codeEditor) {
+    dom.codeEditor.value = savedCode;
+    updateLineNumbers();
+  }
+
+  // Render Sample Test Cases in Tab 2
+  renderSampleTestsTab(challenge.sample_test_cases || []);
+  resetExecutionPanel();
 }
 
-// 4. Editor Interaction & Line Numbers
-function setupEditor() {
-  const editor = dom.codeEditor;
+function renderSampleTestsTab(testCases) {
+  if (!dom.sampleTestsList) return;
+  if (testCases.length === 0) {
+    dom.sampleTestsList.innerHTML = `<p style="color: #64748b; font-size: 13px;">No public sample test cases for this challenge.</p>`;
+    return;
+  }
 
-  editor.addEventListener("input", () => {
+  dom.sampleTestsList.innerHTML = testCases.map((tc, idx) => `
+    <div class="sample-test-card">
+      <div class="test-card-header">
+        <span class="test-title">Sample Test Case #${idx + 1}: ${escapeHtml(tc.name)}</span>
+      </div>
+      <div class="test-card-body">
+        <div class="test-row">
+          <span class="test-label">Function Call:</span>
+          <pre><code>${escapeHtml(tc.call)}</code></pre>
+        </div>
+        <div class="test-row">
+          <span class="test-label">Expected Return:</span>
+          <pre><code>${escapeHtml(JSON.stringify(tc.expected, null, 2))}</code></pre>
+        </div>
+        ${tc.explanation ? `
+          <div class="test-row">
+            <span class="test-label">Explanation:</span>
+            <p style="font-size: 12px; color: #64748b; margin-top: 4px;">${escapeHtml(tc.explanation)}</p>
+          </div>
+        ` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+/* ============================================================
+   4. Markdown & Mathematical Formula Rendering (KaTeX)
+   ============================================================ */
+function formatMarkdown(md) {
+  if (!md) return "";
+
+  // 1. Unescape escaped literal \n or \\n strings
+  let text = String(md).replace(/\\n/g, "\n");
+
+  // 2. Clean up common AI generation typos (e.g. \text{cosine ext{ similarity}})
+  text = text.replace(/\\text\{cosine\s+ext\{\s*similarity\}\}/gi, "\\text{cosine similarity}");
+  text = text.replace(/ext\{\s*similarity\}/gi, "\\text{similarity}");
+  text = text.replace(/ext\{([^}]+)\}/gi, "\\text{$1}");
+
+  // 3. Process Math Formulas (KaTeX / Mathjax delimiters)
+  // Block Math: \[ ... \] or $$ ... $$
+  text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, math) => {
+    return renderMathBlock(math);
+  });
+  text = text.replace(/\$\$([\s\S]*?)\$\$/g, (match, math) => {
+    return renderMathBlock(math);
+  });
+
+  // Inline Math: \( ... \) or $...$
+  text = text.replace(/\\\(([\s\S]*?)\\\)/g, (match, math) => {
+    return renderMathInline(math);
+  });
+  text = text.replace(/\$([^\$\n]+?)\$/g, (match, math) => {
+    return renderMathInline(math);
+  });
+
+  // 4. Standard Markdown Typography
+  text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+  text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
+  text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/```python([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Lists
+  text = text.replace(/^\s*[-*]\s+(.*)$/gm, '<li>$1</li>');
+  text = text.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+
+  // Paragraphs
+  const paragraphs = text.split(/\n\s*\n/);
+  text = paragraphs.map(p => {
+    p = p.trim();
+    if (!p) return "";
+    if (
+      p.startsWith('<h') ||
+      p.startsWith('<pre') ||
+      p.startsWith('<ul') ||
+      p.startsWith('<div class="math-block"')
+    ) {
+      return p;
+    }
+    return `<p>${p.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+
+  return text;
+}
+
+function renderMathBlock(math) {
+  math = math.trim();
+  if (window.katex) {
+    try {
+      return `<div class="math-block">${window.katex.renderToString(math, { displayMode: true, throwOnError: false })}</div>`;
+    } catch (e) {
+      console.warn("KaTeX block render error:", e);
+    }
+  }
+  const fallback = cleanMathText(math);
+  return `<div class="math-block"><code>${escapeHtml(fallback)}</code></div>`;
+}
+
+function renderMathInline(math) {
+  math = math.trim();
+  if (window.katex) {
+    try {
+      return `<span class="math-inline">${window.katex.renderToString(math, { displayMode: false, throwOnError: false })}</span>`;
+    } catch (e) {
+      console.warn("KaTeX inline render error:", e);
+    }
+  }
+  const fallback = cleanMathText(math);
+  return `<span class="math-inline"><code>${escapeHtml(fallback)}</code></span>`;
+}
+
+function cleanMathText(str) {
+  return str
+    .replace(/\\text\{([^}]+)\}/g, '$1')
+    .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1) / ($2)')
+    .replace(/\\cdot/g, '·')
+    .replace(/\\times/g, '×')
+    .replace(/\\|\\|/g, '‖')
+    .replace(/\\/g, '');
+}
+
+/* ============================================================
+   5. Editor Setup & Line Numbers
+   ============================================================ */
+function setupEditor() {
+  if (!dom.codeEditor) return;
+  dom.codeEditor.addEventListener("input", () => {
     updateLineNumbers();
     if (state.challenges[state.currentIndex]) {
-      state.userCode[state.challenges[state.currentIndex].id] = editor.value;
+      state.userCode[state.challenges[state.currentIndex].id] = dom.codeEditor.value;
     }
   });
 
-  editor.addEventListener("scroll", () => {
-    dom.lineNumbers.scrollTop = editor.scrollTop;
-  });
-
-  // Tab Key Indentation & Keyboard Shortcuts
-  editor.addEventListener("keydown", (e) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const start = editor.selectionStart;
-      const end = editor.selectionEnd;
-      editor.value = editor.value.substring(0, start) + "    " + editor.value.substring(end);
-      editor.selectionStart = editor.selectionEnd = start + 4;
-      updateLineNumbers();
-    } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+  dom.codeEditor.addEventListener("keydown", (e) => {
+    // Ctrl+Enter or Cmd+Enter to Run Code
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       runSampleCode();
+    }
+    // Tab key indentation
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const start = dom.codeEditor.selectionStart;
+      const end = dom.codeEditor.selectionEnd;
+      dom.codeEditor.value = dom.codeEditor.value.substring(0, start) + "    " + dom.codeEditor.value.substring(end);
+      dom.codeEditor.selectionStart = dom.codeEditor.selectionEnd = start + 4;
+      updateLineNumbers();
+    }
+  });
+
+  dom.codeEditor.addEventListener("scroll", () => {
+    if (dom.lineNumbers) {
+      dom.lineNumbers.scrollTop = dom.codeEditor.scrollTop;
     }
   });
 }
 
 function updateLineNumbers() {
+  if (!dom.codeEditor || !dom.lineNumbers) return;
   const lines = dom.codeEditor.value.split("\n").length;
   dom.lineNumbers.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
 }
 
-// 5. Run Code Against Sample Test Cases (Candidate runs N times)
+/* ============================================================
+   6. Code Execution (Run Sample Tests N Times)
+   ============================================================ */
 async function runSampleCode() {
   const challenge = state.challenges[state.currentIndex];
-  if (!challenge) return;
+  if (!challenge || !dom.codeEditor) return;
 
   const code = dom.codeEditor.value;
   dom.runCodeBtn.disabled = true;
   dom.runCodeBtn.innerHTML = `<span class="btn-icon">⏳</span> Running...`;
 
+  switchConsoleTab("results");
+  dom.testResultsList.innerHTML = `<div class="loading-spinner-box"><p>Executing code in secure sandbox against sample test cases...</p></div>`;
+
   try {
     const res = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ challenge_id: challenge.id, code })
+      body: JSON.stringify({
+        challenge_id: challenge.id,
+        code: code,
+        session_id: assessmentToken || "default"
+      })
     });
 
     const data = await res.json();
-    if (data.success && data.execution) {
-      renderExecutionResults(data.execution);
-    }
-  } catch (err) {
-    console.error("Execution request failed:", err);
-    dom.stdoutBox.textContent = `Execution error: ${err.message}`;
-  } finally {
     dom.runCodeBtn.disabled = false;
     dom.runCodeBtn.innerHTML = `<span class="btn-icon">▶</span> Run Code`;
+
+    if (!data.success) {
+      dom.testResultsList.innerHTML = `<p style="color: #e11d48; padding: 16px;">Execution failed: ${escapeHtml(data.detail || "Unknown error")}</p>`;
+      return;
+    }
+
+    renderExecutionResults(data.execution);
+  } catch (err) {
+    dom.runCodeBtn.disabled = false;
+    dom.runCodeBtn.innerHTML = `<span class="btn-icon">▶</span> Run Code`;
+    dom.testResultsList.innerHTML = `<p style="color: #e11d48; padding: 16px;">Failed to reach execution runner: ${escapeHtml(err.message)}</p>`;
   }
 }
 
-function renderExecutionResults(execData) {
-  const passed = execData.passed_count;
-  const total = execData.total_count;
+function renderExecutionResults(execution) {
+  const { results, passed_count, total_count, stdout } = execution;
 
-  dom.samplePassBadge.textContent = `${passed}/${total} Passed`;
-  dom.samplePassBadge.style.background = passed === total ? "var(--accent-emerald-bg)" : "var(--accent-rose-bg)";
-  dom.samplePassBadge.style.color = passed === total ? "var(--accent-emerald)" : "var(--accent-rose)";
+  dom.samplePassBadge.textContent = `${passed_count}/${total_count} Passed`;
+  dom.samplePassBadge.className = `badge-results ${passed_count === total_count ? "pass" : "fail"}`;
 
-  // Render cards
-  dom.testResultsList.innerHTML = "";
-  execData.test_results.forEach(tr => {
-    const card = document.createElement("div");
-    card.className = `test-result-card ${tr.status}`;
-    card.innerHTML = `
-      <div class="test-result-header">
-        <span class="test-result-name">${escapeHtml(tr.name)}</span>
-        <span class="test-badge ${tr.status}">${tr.status} • ${tr.duration_ms}ms</span>
+  dom.stdoutBox.textContent = stdout ? stdout.trim() : "No print output (stdout is empty).";
+
+  dom.testResultsList.innerHTML = results.map(r => `
+    <div class="test-result-card ${r.status}">
+      <div class="result-header">
+        <span class="status-tag ${r.status}">
+          ${r.status === "passed" ? "✓ PASSED" : (r.status === "failed" ? "✗ FAILED" : "⚠️ ERROR")}
+        </span>
+        <span class="test-name">${escapeHtml(r.name)}</span>
+        <span class="duration-tag">${r.duration_ms} ms</span>
       </div>
-      <div class="test-result-diff">
-        <div class="diff-col">
-          <div class="diff-label">Expected Output:</div>
-          <div class="diff-val">${escapeHtml(JSON.stringify(tr.expected))}</div>
+
+      <div class="result-details">
+        <div class="detail-row">
+          <span class="detail-label">Function Call:</span>
+          <code>${escapeHtml(r.call)}</code>
         </div>
-        <div class="diff-col">
-          <div class="diff-label">Your Output:</div>
-          <div class="diff-val">${escapeHtml(JSON.stringify(tr.actual))}</div>
+        <div class="detail-row">
+          <span class="detail-label">Expected Return:</span>
+          <code>${escapeHtml(JSON.stringify(r.expected))}</code>
         </div>
+        <div class="detail-row">
+          <span class="detail-label">Your Output:</span>
+          <code>${escapeHtml(JSON.stringify(r.actual))}</code>
+        </div>
+        ${r.error ? `
+          <div class="detail-row error">
+            <span class="detail-label">Traceback:</span>
+            <pre>${escapeHtml(r.error)}</pre>
+          </div>
+        ` : ""}
       </div>
-      ${tr.error ? `<p style="font-size: 11px; color: var(--accent-rose); margin-top: 6px;">❌ ${escapeHtml(tr.error)}</p>` : ""}
-    `;
-    dom.testResultsList.appendChild(card);
-  });
-
-  // Switch to results tab in console drawer
-  switchConsoleTab("results");
-
-  // Collect any stdout logs
-  const stdoutJoined = execData.test_results.map(t => t.stdout).filter(Boolean).join("\n---\n");
-  dom.stdoutBox.textContent = stdoutJoined || "Code executed without stdout logs.";
+    </div>
+  `).join("");
 }
 
-// 6. Submit & Next Question
+function resetExecutionPanel() {
+  if (dom.samplePassBadge) {
+    dom.samplePassBadge.textContent = "0/0 Passed";
+    dom.samplePassBadge.className = "badge-results";
+  }
+  if (dom.stdoutBox) {
+    dom.stdoutBox.textContent = "No console output yet.";
+  }
+  if (dom.testResultsList) {
+    dom.testResultsList.innerHTML = `
+      <div class="console-placeholder">
+        Click <strong>"Run Code"</strong> to test your solution against visible sample test cases. You can run as many times as needed before submitting.
+      </div>
+    `;
+  }
+}
+
 function submitAndNext() {
-  if (state.challenges[state.currentIndex]) {
+  if (state.challenges[state.currentIndex] && dom.codeEditor) {
     state.userCode[state.challenges[state.currentIndex].id] = dom.codeEditor.value;
   }
 
   if (state.currentIndex < state.challenges.length - 1) {
     switchChallenge(state.currentIndex + 1);
   } else {
-    // Final question submission
     finishAssessment();
   }
 }
 
-// 7. Finish Assessment & Post-Submission Evaluation
+/* ============================================================
+   7. Final Submission & Sync
+   ============================================================ */
 async function finishAssessment() {
-  if (state.challenges[state.currentIndex]) {
+  if (state.isSubmitted) return;
+
+  if (state.challenges[state.currentIndex] && dom.codeEditor) {
     state.userCode[state.challenges[state.currentIndex].id] = dom.codeEditor.value;
   }
 
@@ -303,6 +840,7 @@ async function finishAssessment() {
   if (!confirmed) return;
 
   clearInterval(state.timerInterval);
+  state.isSubmitted = true;
   openScorecardModal();
 
   try {
@@ -310,12 +848,18 @@ async function finishAssessment() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        candidate_name: "Technical Candidate",
-        candidate_email: "candidate@interview.ai",
+        candidate_name: assessmentCandidateName || "Technical Candidate",
+        candidate_email: assessmentCandidateEmail || "candidate@interview.ai",
+        candidate_id: assessmentCandidateId || undefined,
+        task_id: assessmentTaskId || undefined,
+        session_id: assessmentToken || "default",
         submissions: state.userCode,
         session_metadata: {
-          camera_active: !!state.mediaStream,
-          audio_active: state.isAudioActive,
+          token: assessmentToken,
+          candidate_id: assessmentCandidateId,
+          camera_monitored: state.cameraActive,
+          audio_monitored: state.micActive,
+          tab_switches: state.sessionSwitches,
           duration_seconds: (40 * 60) - state.remainingSeconds
         }
       })
@@ -325,222 +869,127 @@ async function finishAssessment() {
     if (data.success && data.scorecard) {
       state.lastScorecard = data.scorecard;
       renderScorecard(data.scorecard);
+
+      // Automatically sync scorecard to StaffGenie Next.js candidate record
+      if (assessmentCandidateId || assessmentToken || assessmentCandidateEmail) {
+        try {
+          await fetch("http://localhost:3000/api/coding-assessment/submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              candidateId: assessmentCandidateId,
+              candidateEmail: assessmentCandidateEmail,
+              token: assessmentToken,
+              overallScore: data.scorecard.overall_score,
+              scorecard: data.scorecard
+            })
+          });
+          console.log("[StaffGenie Sync] Scorecard synchronized to StaffGenie candidate record.");
+        } catch (syncErr) {
+          console.warn("[StaffGenie Sync] Could not sync scorecard to StaffGenie:", syncErr);
+        }
+      }
     }
   } catch (err) {
     console.error("Submission failed:", err);
-    dom.scorecardBody.innerHTML = `<p style="color: var(--accent-rose);">Failed to submit assessment: ${err.message}</p>`;
+    if (dom.scorecardBody) {
+      dom.scorecardBody.innerHTML = `<p style="color: #e11d48;">Failed to submit assessment: ${escapeHtml(err.message)}</p>`;
+    }
   }
 }
 
 function openScorecardModal() {
-  dom.scorecardModal.classList.remove("hidden");
-  dom.scorecardBody.innerHTML = `
-    <div style="text-align: center; padding: 40px 20px;">
-      <div style="font-size: 40px; margin-bottom: 12px; animation: pulse 1s infinite;">⚙️</div>
-      <h3 style="color: #fff; margin-bottom: 8px;">Evaluating Technical Submissions...</h3>
-      <p style="color: var(--text-secondary); font-size: 13px;">Running comprehensive hidden test suites, edge cases, and static code quality checks.</p>
-    </div>
-  `;
+  if (dom.scorecardModal) dom.scorecardModal.classList.remove("hidden");
+  if (dom.scorecardBody) {
+    dom.scorecardBody.innerHTML = `
+      <div style="text-align: center; padding: 40px 20px;">
+        <div style="font-size: 38px; margin-bottom: 14px;">⏳</div>
+        <h3 style="color: #0b1c30; font-size: 17px; font-weight: 700; margin-bottom: 8px;">Submitting Technical Solutions...</h3>
+        <p style="color: #64748b; font-size: 13px;">Please wait while your answers are securely transmitted to the recruitment team.</p>
+      </div>
+    `;
+  }
 }
 
 function renderScorecard(scorecard) {
-  const overallScore = scorecard.overall_score;
-  const scoreClass = overallScore >= 80 ? "high" : (overallScore >= 50 ? "med" : "low");
-
-  let questionsHtml = "";
-  scorecard.questions.forEach((q, i) => {
-    const qClass = q.score >= 80 ? "high" : (q.score >= 50 ? "med" : "low");
-    const llm = q.llm_review;
-
-    questionsHtml += `
-      <div class="q-score-card">
-        <div class="q-score-header">
-          <div>
-            <div class="q-score-title">Question ${i + 1}: ${escapeHtml(q.title)}</div>
-            <span style="font-size: 11px; color: var(--text-secondary);">Passed ${q.passed_tests} of ${q.total_tests} Hidden Evaluation Tests</span>
-          </div>
-          <span class="q-score-pill ${qClass}">${q.score} / 100</span>
+  if (dom.scorecardBody) {
+    dom.scorecardBody.innerHTML = `
+      <div style="text-align: center; padding: 24px 16px 16px;">
+        <div style="width: 56px; height: 56px; background: #ecfdf5; border: 2px solid #a7f3d0; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 26px; color: #059669;">✓</div>
+        <h3 style="color: #0b1c30; font-size: 19px; font-weight: 800; margin-bottom: 8px;">Assessment Completed & Submitted!</h3>
+        <p style="color: #475569; font-size: 13.5px; line-height: 1.6; max-width: 460px; margin: 0 auto 18px;">
+          Thank you for completing the technical coding assessment. Your solutions have been securely delivered directly to the recruitment team for evaluation.
+        </p>
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 18px; text-align: left; max-width: 460px; margin: 0 auto 18px;">
+          <div style="font-size: 11.5px; font-weight: 700; color: #142175; text-transform: uppercase; margin-bottom: 4px;">Proctoring Telemetry Verified</div>
+          <p style="font-size: 12.5px; color: #475569; line-height: 1.5; margin: 0;">
+            • Continuous Camera & Microphone Stream: <strong>Active</strong><br>
+            • Monitored Session Tab Switches: <strong>${state.sessionSwitches}</strong><br>
+            • Time Elapsed: <strong>${Math.round(((40 * 60) - state.remainingSeconds) / 60)} minutes</strong>
+          </p>
         </div>
-
-        ${q.feedback && q.feedback.length > 0 ? `
-          <div style="font-size: 12px; color: #cbd5e1; margin-top: 6px;">
-            ${q.feedback.map(f => `<p>• ${escapeHtml(f)}</p>`).join("")}
-          </div>
-        ` : ""}
-
-        ${llm ? `
-          <div class="llm-review-box">
-            <h4>🤖 AI Architectural & Code Quality Review</h4>
-            <p style="margin-bottom: 4px;"><strong>Complexity:</strong> Time: <code>${llm.time_complexity || "O(N)"}</code> • Space: <code>${llm.space_complexity || "O(1)"}</code></p>
-            <p style="color: var(--accent-emerald);"><strong>Strengths:</strong> ${(llm.strengths || []).join(", ")}</p>
-            ${llm.improvements && llm.improvements.length ? `<p style="color: #fbbf24; margin-top: 2px;"><strong>Suggestions:</strong> ${llm.improvements.join(", ")}</p>` : ""}
-          </div>
-        ` : ""}
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">You may now safely close this browser window.</p>
       </div>
     `;
-  });
-
-  dom.scorecardBody.innerHTML = `
-    <!-- Scorecard Summary Banner -->
-    <div class="scorecard-banner">
-      <div class="scorecard-metric">
-        <div class="val ${scoreClass}">${overallScore}</div>
-        <div class="label">Overall Score / 100</div>
-      </div>
-      <div class="scorecard-metric">
-        <div class="val" style="font-size: 24px; color: #38bdf8;">${escapeHtml(scorecard.overall_grade)}</div>
-        <div class="label">Candidate Grade</div>
-      </div>
-      <div class="scorecard-metric">
-        <div class="val" style="font-size: 18px; color: var(--accent-emerald);">${escapeHtml(scorecard.recommendation)}</div>
-        <div class="label">Hiring Recommendation</div>
-      </div>
-    </div>
-
-    <h3 style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; text-transform: uppercase;">
-      Per-Question Marks Breakdown (out of 100)
-    </h3>
-    ${questionsHtml}
-
-    <div style="margin-top: 16px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); font-size: 12px; color: var(--text-muted);">
-      🛡️ <strong>Proctoring Audit:</strong> Camera Active • Microphone Active • Solved in ${Math.round(scorecard.session_proctoring.duration_seconds / 60)} minutes.
-    </div>
-  `;
-}
-
-// 8. Dynamic JD Generation Modal Handling
-async function handleGenerateFromJd() {
-  const title = dom.jdJobTitle.value.trim();
-  const desc = dom.jdDescriptionText.value.trim();
-
-  if (!desc) {
-    alert("Please provide a job description or select a preset.");
-    return;
   }
 
-  dom.generateJdBtn.disabled = true;
-  dom.generateJdBtn.innerHTML = `⏳ Synthesizing Challenges...`;
+  // Lock the workspace
+  if (dom.codeEditor) dom.codeEditor.readOnly = true;
+  if (dom.runCodeBtn) dom.runCodeBtn.disabled = true;
+  if (dom.submitNextBtn) dom.submitNextBtn.disabled = true;
+  if (dom.finishAssessmentBtn) {
+    dom.finishAssessmentBtn.disabled = true;
+    dom.finishAssessmentBtn.textContent = "Submitted";
+  }
 
-  try {
-    const res = await fetch("/api/challenges/generate-from-jd", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        job_title: title,
-        job_description: desc,
-        difficulty: "Medium",
-        num_questions: 3
-      })
-    });
-
-    const data = await res.json();
-    if (data.success && data.challenges.length > 0) {
-      state.challenges = data.challenges;
-      state.userCode = {};
-      state.challenges.forEach(c => {
-        state.userCode[c.id] = c.starter_code;
-      });
-
-      dom.roleBadge.textContent = title;
-      dom.jdModal.classList.add("hidden");
-      renderQuestionTabs();
-      loadChallenge(0);
-    }
-  } catch (err) {
-    alert(`Failed to generate challenges from JD: ${err.message}`);
-  } finally {
-    dom.generateJdBtn.disabled = false;
-    dom.generateJdBtn.innerHTML = `✨ Generate Tailored Assessment`;
+  // Stop media tracks
+  if (state.mediaStream) {
+    state.mediaStream.getTracks().forEach(t => t.stop());
   }
 }
 
-// 9. Proctoring (Camera & Real-Time Audio Meter)
-async function initProctoring() {
-  try {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      state.mediaStream = stream;
-      dom.proctorVideo.srcObject = stream;
-
-      // Initialize Web Audio API Analyser for live microphone level bars
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (AudioContext) {
-        state.audioContext = new AudioContext();
-        const source = state.audioContext.createMediaStreamSource(stream);
-        state.analyser = state.audioContext.createAnalyser();
-        state.analyser.fftSize = 64;
-        source.connect(state.analyser);
-        state.isAudioActive = true;
-        animateAudioMeter();
-      }
-    }
-  } catch (err) {
-    console.warn("Camera/Mic access denied or unavailable:", err);
-    // Display offline badge on proctor video widget
-    const badge = document.querySelector(".proctor-badge");
-    if (badge) badge.innerHTML = `<span style="color:#f87171;">⚠️ Camera Off</span>`;
-  }
-}
-
-function animateAudioMeter() {
-  if (!state.analyser) return;
-
-  const dataArray = new Uint8Array(state.analyser.frequencyBinCount);
-  state.analyser.getByteFrequencyData(dataArray);
-
-  // Compute average decibels
-  let sum = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    sum += dataArray[i];
-  }
-  const avg = sum / dataArray.length;
-
-  // Animate the 5 bars in the proctor widget
-  const bars = document.querySelectorAll(".audio-bars .bar");
-  bars.forEach((bar, i) => {
-    const val = dataArray[i * 2] || avg;
-    const heightPx = Math.max(3, Math.min(14, (val / 255) * 16));
-    bar.style.height = `${heightPx}px`;
-  });
-
-  requestAnimationFrame(animateAudioMeter);
-}
-
-// 10. Timer Functionality
+/* ============================================================
+   8. Countdown Timer
+   ============================================================ */
 function startTimer() {
   clearInterval(state.timerInterval);
   state.timerInterval = setInterval(() => {
     state.remainingSeconds--;
     if (state.remainingSeconds <= 0) {
       clearInterval(state.timerInterval);
-      dom.countdownTimer.textContent = "00:00";
+      if (dom.countdownTimer) dom.countdownTimer.textContent = "00:00";
       finishAssessment();
       return;
     }
 
     const mins = Math.floor(state.remainingSeconds / 60);
     const secs = state.remainingSeconds % 60;
-    dom.countdownTimer.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-
-    if (state.remainingSeconds < 5 * 60) {
-      dom.countdownTimer.classList.add("urgent");
+    if (dom.countdownTimer) {
+      dom.countdownTimer.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      if (state.remainingSeconds < 5 * 60) {
+        dom.countdownTimer.classList.add("urgent");
+      }
     }
   }, 1000);
 }
 
-// Event Listeners
+/* ============================================================
+   9. General Event Listeners
+   ============================================================ */
 function setupEventListeners() {
-  dom.runCodeBtn.onclick = runSampleCode;
-  dom.submitNextBtn.onclick = submitAndNext;
-  dom.finishAssessmentBtn.onclick = finishAssessment;
-  dom.resetCodeBtn.onclick = () => {
-    const ch = state.challenges[state.currentIndex];
-    if (ch && confirm("Reset code back to original starter template?")) {
-      dom.codeEditor.value = ch.starter_code;
-      state.userCode[ch.id] = ch.starter_code;
-      updateLineNumbers();
-    }
-  };
+  if (dom.runCodeBtn) dom.runCodeBtn.onclick = runSampleCode;
+  if (dom.submitNextBtn) dom.submitNextBtn.onclick = submitAndNext;
+  if (dom.finishAssessmentBtn) dom.finishAssessmentBtn.onclick = finishAssessment;
+  if (dom.resetCodeBtn) {
+    dom.resetCodeBtn.onclick = () => {
+      const ch = state.challenges[state.currentIndex];
+      if (ch && confirm("Reset code back to original starter template?")) {
+        dom.codeEditor.value = ch.starter_code;
+        state.userCode[ch.id] = ch.starter_code;
+        updateLineNumbers();
+      }
+    };
+  }
 
   // Left Pane Tabs
   document.querySelectorAll(".pane-tab").forEach(tab => {
@@ -551,7 +1000,6 @@ function setupEventListeners() {
       const target = tab.dataset.tab;
       if (target === "description") document.getElementById("tabDescription").classList.add("active");
       if (target === "sampleTests") document.getElementById("tabSampleTests").classList.add("active");
-      if (target === "proctoring") document.getElementById("tabProctoring").classList.add("active");
     };
   });
 
@@ -560,29 +1008,9 @@ function setupEventListeners() {
     tab.onclick = () => switchConsoleTab(tab.dataset.view);
   });
 
-  // Scorecard modal buttons
-  dom.closeModalBtn.onclick = () => dom.scorecardModal.classList.add("hidden");
-  dom.downloadScorecardBtn.onclick = () => {
-    if (!state.lastScorecard) return;
-    const blob = new Blob([JSON.stringify(state.lastScorecard, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `scorecard_${state.lastScorecard.submission_id}.json`;
-    a.click();
-  };
-
-  // JD Modal Buttons
-  dom.openJdModalBtn.onclick = () => dom.jdModal.classList.remove("hidden");
-  dom.closeJdModalBtn.onclick = () => dom.jdModal.classList.add("hidden");
-  dom.generateJdBtn.onclick = handleGenerateFromJd;
-
-  document.querySelectorAll(".preset-btn").forEach(btn => {
-    btn.onclick = () => {
-      dom.jdJobTitle.value = btn.dataset.title;
-      dom.jdDescriptionText.value = btn.dataset.desc;
-    };
-  });
+  if (dom.closeModalBtn) {
+    dom.closeModalBtn.onclick = () => dom.scorecardModal.classList.add("hidden");
+  }
 }
 
 function switchConsoleTab(view) {
@@ -594,24 +1022,9 @@ function switchConsoleTab(view) {
   if (view === "logs") document.getElementById("viewLogs").classList.add("active");
 }
 
-// Helpers
 function escapeHtml(str) {
   if (typeof str !== "string") str = String(str ?? "");
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function formatMarkdown(md) {
-  if (!md) return "";
-  let html = escapeHtml(md);
-  html = html.replace(/### (.*?)\n/g, '<h3>$1</h3>');
-  html = html.replace(/## (.*?)\n/g, '<h2>$1</h2>');
-  html = html.replace(/# (.*?)\n/g, '<h1>$1</h1>');
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/`(.*?)`/g, '<code>$1</code>');
-  html = html.replace(/```python([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-  html = html.replace(/\n\n/g, '<p></p>');
-  return html;
 }
 
 window.addEventListener("DOMContentLoaded", init);

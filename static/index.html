@@ -3,29 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>StaffGenie — Generic Technical Coding Assessment</title>
+  <title>StaffGenie — Technical Coding Assessment</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="static/style.css">
+  <!-- KaTeX for rendering mathematical formulas and notation -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
 </head>
-<body class="dark-theme">
+<body class="light-theme">
   <!-- Top App Navigation -->
   <header class="app-header">
     <div class="header-left">
       <div class="logo-box">
-        <span class="logo-icon">⚡</span>
+        <img src="static/logo.png" alt="StaffGenie Logo" width="32" height="32" class="platform-logo" />
         <div class="logo-text">
           <span class="logo-title">StaffGenie</span>
-          <span class="logo-subtitle">CodeSandbox</span>
+          <span class="logo-subtitle">by Neural Surge AI</span>
         </div>
       </div>
 
       <div class="session-info">
-        <span class="badge-role" id="roleBadge">AI / Backend Engineering</span>
-        <button id="openJdModalBtn" class="btn-ghost" style="padding: 3px 8px; font-size: 11px; border-color: rgba(59,130,246,0.4); color: #60a5fa;" title="Generate assessment tailored to a specific Job Description">
-          ✨ Custom JD / Role
-        </button>
+        <span class="badge-role" id="roleBadge">Technical Engineer</span>
+        <span id="candidateInfoBadge" style="display:none;" class="badge-candidate"></span>
       </div>
     </div>
 
@@ -50,12 +52,11 @@
 
   <!-- Main Split Sandbox Workspace -->
   <main class="sandbox-container">
-    <!-- Left Pane: Problem Description & Proctoring Feed -->
+    <!-- Left Pane: Problem Description -->
     <section class="pane-left">
       <div class="pane-tabs">
         <button class="pane-tab active" data-tab="description">Problem Statement</button>
         <button class="pane-tab" data-tab="sampleTests">Sample Test Cases</button>
-        <button class="pane-tab" data-tab="proctoring">Proctoring Telemetry</button>
       </div>
 
       <div class="pane-body">
@@ -71,39 +72,6 @@
         <!-- Tab 2: Sample Test Cases -->
         <div class="tab-content" id="tabSampleTests">
           <div class="sample-tests-container" id="sampleTestsList"></div>
-        </div>
-
-        <!-- Tab 3: Proctoring Telemetry -->
-        <div class="tab-content" id="tabProctoring">
-          <div class="proctoring-detail-box">
-            <h3>Automated Interview Proctoring</h3>
-            <p>Your session is actively monitored for audio-visual integrity during technical problem-solving.</p>
-            <ul class="proctoring-check-list">
-              <li><span class="status-dot green"></span> Webcam feed active & stream recording</li>
-              <li><span class="status-dot green"></span> Real-time microphone audio visualizer</li>
-              <li><span class="status-dot green"></span> In-browser code runner telemetry</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      <!-- Proctoring Mini Floating Card -->
-      <div class="proctor-widget" id="proctorWidget">
-        <div class="proctor-video-wrapper">
-          <video id="proctorVideo" autoplay playsinline muted></video>
-          <div class="proctor-badge">
-            <span class="pulsing-dot"></span> PROCTORED
-          </div>
-        </div>
-        <div class="proctor-audio-meter">
-          <span class="audio-label">🎙️ Mic</span>
-          <div class="audio-bars">
-            <span class="bar bar-1"></span>
-            <span class="bar bar-2"></span>
-            <span class="bar bar-3"></span>
-            <span class="bar bar-4"></span>
-            <span class="bar bar-5"></span>
-          </div>
         </div>
       </div>
     </section>
@@ -137,15 +105,15 @@
               Sample Results <span class="badge-results" id="samplePassBadge">0/0 Passed</span>
             </button>
             <button class="console-tab" data-view="logs">
-              Console Output (stdout)
+              Console Output
             </button>
           </div>
 
           <div class="console-actions">
-            <button id="runCodeBtn" class="btn-primary" title="Run against sample inputs (run n times)">
+            <button id="runCodeBtn" class="btn-run" title="Execute against sample test cases (run as many times as you like)">
               <span class="btn-icon">▶</span> Run Code
             </button>
-            <button id="submitNextBtn" class="btn-success" title="Submit answer and advance to next challenge">
+            <button id="submitNextBtn" class="btn-submit" title="Save solution and advance to next question">
               Submit & Next <span class="btn-icon">➔</span>
             </button>
           </div>
@@ -170,61 +138,152 @@
     </section>
   </main>
 
-  <!-- Custom JD Generator Modal -->
-  <div class="modal-backdrop hidden" id="jdModal">
-    <div class="modal-card" style="max-width: 600px;">
-      <div class="modal-header">
-        <div class="modal-title-group">
-          <span class="completion-icon">🎯</span>
-          <div>
-            <h2>Generate Assessment from Job Description</h2>
-            <p class="modal-subtitle">Use LLM to generate custom questions matching any candidate JD</p>
+  <!-- Floating Live Proctoring Preview Widget -->
+  <div class="proctor-widget" id="proctorWidget" style="display: none;">
+    <div class="proctor-video-wrapper">
+      <video id="proctorVideo" autoplay playsinline muted></video>
+      <div class="proctor-badge">
+        <span class="pulsing-dot"></span> PROCTORED
+      </div>
+    </div>
+    <div class="proctor-audio-meter">
+      <span class="audio-label">🎙️ Live Audio</span>
+      <div class="audio-bars">
+        <span class="bar bar-1"></span>
+        <span class="bar bar-2"></span>
+        <span class="bar bar-3"></span>
+        <span class="bar bar-4"></span>
+        <span class="bar bar-5"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mandatory Pre-Assessment Camera & Audio Verification Modal -->
+  <div class="hardware-modal-backdrop" id="hardwareModal">
+    <div class="hardware-card">
+      <div class="hardware-header">
+        <div class="security-shield-icon">🛡️</div>
+        <h2>Pre-Interview Device Check</h2>
+        <p>Your technical interview requires continuous camera and audio proctoring.</p>
+      </div>
+
+      <div class="hardware-body">
+        <!-- Live Webcam Preview Window -->
+        <div class="hardware-video-container">
+          <video id="hardwareVideo" autoplay playsinline muted></video>
+          <div class="video-status-overlay" id="videoStatusOverlay">
+            <span class="status-indicator-icon">📷</span>
+            <p>Camera is currently off</p>
           </div>
         </div>
-      </div>
-      <div class="modal-body" style="padding: 20px;">
-        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Job Title</label>
-        <input type="text" id="jdJobTitle" value="Senior AI & FastAPI Engineer" style="width: 100%; background: #0c0f17; border: 1px solid var(--border-color); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px;">
 
-        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Job Description / Tech Stack</label>
-        <textarea id="jdDescriptionText" rows="6" style="width: 100%; background: #0c0f17; border: 1px solid var(--border-color); color: #fff; padding: 10px 12px; border-radius: 6px; font-size: 12.5px; font-family: var(--font-sans); margin-bottom: 14px;" placeholder="Paste job description, requirements, or core responsibilities here...">Looking for a Senior Python Engineer to build high-concurrency FastAPI microservices, vector search & semantic reranking for RAG pipelines, and real-time streaming telemetry.</textarea>
+        <!-- Hardware Status Checklist -->
+        <div class="hardware-checklist">
+          <div class="device-status-row" id="camStatusRow">
+            <div class="device-info">
+              <span class="device-icon">📹</span>
+              <div>
+                <strong>Webcam Video Stream</strong>
+                <span class="device-hint" id="camHint">Required for session identity verification</span>
+              </div>
+            </div>
+            <span class="device-state-badge state-pending" id="camBadge">Off</span>
+          </div>
 
-        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-          <button type="button" class="btn-ghost preset-btn" data-title="Senior AI & FastAPI Engineer" data-desc="Build high-concurrency FastAPI microservices, vector similarity and cosine ranking for RAG, and real-time streaming pipelines.">Preset: AI / FastAPI</button>
-          <button type="button" class="btn-ghost preset-btn" data-title="Senior Data Platform Engineer" data-desc="Design real-time sliding window stream aggregations, event deduplication, and distributed data pipelines in Python.">Preset: Data Platform</button>
+          <div class="device-status-row" id="micStatusRow">
+            <div class="device-info">
+              <span class="device-icon">🎙️</span>
+              <div>
+                <strong>Microphone Audio Stream</strong>
+                <span class="device-hint" id="micHint">Required for background audio integrity</span>
+              </div>
+            </div>
+            <span class="device-state-badge state-pending" id="micBadge">Off</span>
+          </div>
+        </div>
+
+        <!-- Live Mic Level Bar -->
+        <div class="mic-test-box">
+          <div class="mic-test-label">
+            <span>Microphone Level</span>
+            <span id="micDbLevel">0%</span>
+          </div>
+          <div class="mic-level-track">
+            <div class="mic-level-fill" id="micLevelFill"></div>
+          </div>
+        </div>
+
+        <div class="proctoring-notice-banner">
+          ⚠️ <strong>Strict Policy:</strong> You cannot start or continue the interview without both camera and microphone enabled. Tab switching or minimizing this window is strictly monitored.
         </div>
       </div>
-      <div class="modal-footer">
-        <button id="closeJdModalBtn" class="btn-ghost">Cancel</button>
-        <button id="generateJdBtn" class="btn-primary">
-          ✨ Generate Tailored Assessment
+
+      <div class="hardware-footer">
+        <button id="enableHardwareBtn" class="btn-enable-hardware">
+          <span>📷</span> Turn On Camera &amp; Mic
+        </button>
+        <button id="startAssessmentBtn" class="btn-start-assessment" disabled>
+          <span>🔒</span> Start Assessment
         </button>
       </div>
     </div>
   </div>
 
-  <!-- Final Scorecard & Evaluation Modal -->
+  <!-- Session Switch / Tab-Switch Proctoring Alert Modal -->
+  <div class="modal-backdrop hidden" id="switchWarningModal" style="z-index: 9999;">
+    <div class="modal-card violation-card">
+      <div class="violation-icon">⚠️</div>
+      <h2 style="color: #991b1b; font-size: 20px; font-weight: 800; margin-bottom: 8px;">Proctoring Violation: Session Switch!</h2>
+      <p class="violation-text" style="color: #475569; font-size: 13.5px; line-height: 1.6; margin-bottom: 16px;">
+        You navigated away or switched out of the active assessment window. <strong>Switching tabs, windows, or opening external tools is strictly prohibited</strong> and violates session integrity.
+      </p>
+      <div class="violation-count-box">
+        Logged Session Violations: <strong id="violationCountBadge" style="color: #dc2626;">1</strong> / 3
+      </div>
+      <p class="violation-subtext" style="color: #64748b; font-size: 12px; margin-bottom: 20px;">
+        This incident has been permanently recorded and timestamped in your candidate proctoring report.
+      </p>
+      <button id="returnToSessionBtn" class="btn-danger-full">
+        Return &amp; Resume Fullscreen Assessment
+      </button>
+    </div>
+  </div>
+
+  <!-- Hardware Stream Lost Modal -->
+  <div class="modal-backdrop hidden" id="hardwareLostModal" style="z-index: 9998;">
+    <div class="modal-card violation-card">
+      <div class="violation-icon">📹</div>
+      <h2 style="color: #991b1b; font-size: 18px; font-weight: 800; margin-bottom: 8px;">Hardware Disconnected!</h2>
+      <p class="violation-text" style="color: #475569; font-size: 13.5px; line-height: 1.6; margin-bottom: 16px;">
+        Your camera or microphone stream was closed or lost. The assessment is paused until hardware is reconnected.
+      </p>
+      <button id="reconnectHardwareBtn" class="btn-enable-hardware" style="width: 100%; justify-content: center;">
+        Reconnect Camera &amp; Microphone
+      </button>
+    </div>
+  </div>
+
+  <!-- Final Submission Confirmation Modal (Score is private to recruiter only) -->
   <div class="modal-backdrop hidden" id="scorecardModal">
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-group">
-          <span class="completion-icon">🏆</span>
+          <span class="completion-icon">✅</span>
           <div>
-            <h2>Technical Assessment Completed</h2>
-            <p class="modal-subtitle">Official candidate evaluation report & question breakdown</p>
+            <h2>Assessment Submitted Successfully</h2>
+            <p class="modal-subtitle">Your responses have been securely delivered</p>
           </div>
         </div>
       </div>
 
       <div class="modal-body" id="scorecardBody">
         <div class="loading-spinner-box">
-          <p>Running comprehensive hidden test suites and evaluating code quality...</p>
+          <p>Transmitting solutions to the recruitment evaluation system...</p>
         </div>
       </div>
 
       <div class="modal-footer">
-        <button id="closeModalBtn" class="btn-ghost">Close Report</button>
-        <button id="downloadScorecardBtn" class="btn-primary">Download Scorecard (JSON)</button>
+        <button id="closeModalBtn" class="btn-primary">Done</button>
       </div>
     </div>
   </div>

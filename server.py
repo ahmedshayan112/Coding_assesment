@@ -69,6 +69,8 @@ class RunCodeRequest(BaseModel):
 class SubmitAssessmentRequest(BaseModel):
     candidate_name: str = "Candidate"
     candidate_email: str = "candidate@example.com"
+    candidate_id: Optional[str] = None
+    task_id: Optional[str] = None
     submissions: Dict[str, str]  # { challenge_id: code }
     session_metadata: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = "default"
@@ -201,6 +203,49 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
             json.dump(scorecard, f, indent=2)
     except Exception as e:
         print(f"Warning: Failed to persist submission file: {e}")
+
+    # Synchronize scorecard directly to MongoDB Recruitment database
+    try:
+        import pymongo
+        from bson import ObjectId
+        from datetime import datetime, timezone
+        
+        mongo_uri = os.environ.get(
+            "MONGODB_URI",
+            "mongodb+srv://char3d_userA:NS.AI2026@cluster0.vgyhy5m.mongodb.net/Recruitment?retryWrites=true&w=majority"
+        )
+        db_name = os.environ.get("MONGODB_DB", "Recruitment")
+        client = pymongo.MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        db = client[db_name]
+        candidates = db["candidates"]
+        
+        query = {}
+        if req.candidate_id and ObjectId.is_valid(req.candidate_id):
+            query["_id"] = ObjectId(req.candidate_id)
+        elif session_id and session_id != "default":
+            query["codingToken"] = session_id
+        elif req.candidate_email and req.candidate_email != "candidate@example.com":
+            query["email"] = req.candidate_email
+
+        if query:
+            score = scorecard.get("overall_score", 0)
+            update_op = {
+                "$set": {
+                    "codingStatus": "completed",
+                    "codingCompleted": True,
+                    "codingScore": score,
+                    "codingScorecard": scorecard,
+                    "codingCompletedAt": datetime.now(timezone.utc),
+                    "finalScore": score
+                }
+            }
+            if "email" in query and "_id" not in query and "codingToken" not in query:
+                res = candidates.update_many(query, update_op)
+            else:
+                res = candidates.update_one(query, update_op)
+            print(f"[MongoDB Sync] Updated candidate {query}: modified={res.modified_count}, score={score}")
+    except Exception as e:
+        print(f"[MongoDB Sync] Warning: Could not sync to MongoDB directly: {e}")
 
     return {
         "success": True,

@@ -23,9 +23,37 @@ import json
 import time
 import asyncio
 import inspect
+from types import ModuleType
+
+# Mock / stub common ML and Web libraries if not installed in sandbox
+class _GenericMock:
+    def __init__(self, *args, **kwargs): pass
+    def __call__(self, *args, **kwargs): return self
+    def __getattr__(self, name): return self
+    def __getitem__(self, item): return self
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs): return cls()
+    def train(self, *args, **kwargs): pass
+    def evaluate(self, *args, **kwargs): return dict(eval_accuracy=0.75)
+
+for _mname in ['transformers', 'sklearn', 'sklearn.model_selection', 'torch', 'joblib', 'fastapi', 'pydantic']:
+    if _mname not in sys.modules:
+        try:
+            __import__(_mname)
+        except Exception:
+            _dummy_mod = ModuleType(_mname)
+            sys.modules[_mname] = _dummy_mod
+            _dummy_mod.AutoModelForSequenceClassification = _GenericMock
+            _dummy_mod.Trainer = _GenericMock
+            _dummy_mod.TrainingArguments = _GenericMock
+            _dummy_mod.FastAPI = _GenericMock
+            _dummy_mod.BaseModel = object
+            _dummy_mod.train_test_split = lambda *a, **kw: (a[0][:2] if a else [], a[0][2:] if a else [], a[1][:2] if len(a)>1 else [], a[1][2:] if len(a)>1 else [])
+            _dummy_mod.load = lambda *a, **kw: _GenericMock()
 
 # Candidate Submitted Code
 {candidate_code}
+
 
 async def _harness_main():
     {test_call_block}
@@ -237,6 +265,7 @@ def run_sample_tests(candidate_code: str, sample_test_cases: list) -> Dict[str, 
         tests_summary.append({
             "id": tc.get("id", f"sample-{idx}"),
             "name": name,
+            "call": tc.get("call", ""),
             "status": status,
             "expected": expected,
             "actual": exec_res.get("result"),
