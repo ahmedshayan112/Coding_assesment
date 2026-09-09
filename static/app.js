@@ -31,6 +31,15 @@ const state = {
   lastScorecard: null
 };
 
+// Base API path for coding assessment backend (FastAPI)
+// When served behind Nginx reverse proxy at /coding/, prefix API calls with /coding/api
+const CODING_API_BASE = (function() {
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/coding")) {
+    return "/coding/api";
+  }
+  return "/api";
+})();
+
 // DOM Elements
 const dom = {
   questionTabs: document.getElementById("questionTabs"),
@@ -426,7 +435,7 @@ function playWarningBeep() {
 async function loadChallenges() {
   try {
     const sessionParam = encodeURIComponent(assessmentToken || "default");
-    const res = await fetch(`/api/challenges?session_id=${sessionParam}`);
+    const res = await fetch(`${CODING_API_BASE}/challenges?session_id=${sessionParam}`);
     const data = await res.json();
     if (data.success && data.challenges.length > 0) {
       state.challenges = data.challenges;
@@ -728,7 +737,7 @@ async function runSampleCode() {
   dom.testResultsList.innerHTML = `<div class="loading-spinner-box"><p>Executing code in secure sandbox against sample test cases...</p></div>`;
 
   try {
-    const res = await fetch("/api/run", {
+    const res = await fetch(`${CODING_API_BASE}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -844,7 +853,7 @@ async function finishAssessment() {
   openScorecardModal();
 
   try {
-    const res = await fetch("/api/submit", {
+    const res = await fetch(`${CODING_API_BASE}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
