@@ -873,7 +873,10 @@ async function finishAssessment() {
       // Automatically sync scorecard to StaffGenie Next.js candidate record
       if (assessmentCandidateId || assessmentToken || assessmentCandidateEmail) {
         try {
-          await fetch("http://localhost:3000/api/coding-assessment/submit", {
+          const syncUrl = (typeof window !== "undefined" && window.location.origin && !window.location.origin.includes(":8000"))
+            ? `${window.location.origin}/api/coding-assessment/submit`
+            : "http://localhost:3000/api/coding-assessment/submit";
+          await fetch(syncUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
