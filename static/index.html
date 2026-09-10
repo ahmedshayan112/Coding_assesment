@@ -232,20 +232,22 @@
   <!-- Session Switch / Tab-Switch Proctoring Alert Modal -->
   <div class="modal-backdrop hidden" id="switchWarningModal" style="z-index: 9999;">
     <div class="modal-card violation-card">
-      <div class="violation-icon">⚠️</div>
-      <h2 style="color: #991b1b; font-size: 20px; font-weight: 800; margin-bottom: 8px;">Proctoring Violation: Session Switch!</h2>
+      <div class="violation-icon" style="font-size: 40px; margin-bottom: 12px;">⛔</div>
+      <h2 style="color: #991b1b; font-size: 21px; font-weight: 800; margin-bottom: 8px;">Proctoring Violation: Session Switch!</h2>
       <p class="violation-text" style="color: #475569; font-size: 13.5px; line-height: 1.6; margin-bottom: 16px;">
-        You navigated away or switched out of the active assessment window. <strong>Switching tabs, windows, or opening external tools is strictly prohibited</strong> and violates session integrity.
+        A session switch or tab navigation was detected. Under strict proctoring integrity policy, <strong>your assessment has been automatically closed and submitted</strong> to the recruitment team.
       </p>
-      <div class="violation-count-box">
-        Logged Session Violations: <strong id="violationCountBadge" style="color: #dc2626;">1</strong> / 3
+      <div class="violation-count-box" style="background: #fff1f2; border: 1.5px solid #fecdd3; border-radius: 12px; padding: 14px 18px; text-align: left; margin-bottom: 18px;">
+        <div style="font-size: 11.5px; font-weight: 700; color: #9f1239; text-transform: uppercase; margin-bottom: 6px;">Proctoring Enforcement Details</div>
+        <p style="font-size: 12.5px; color: #881337; line-height: 1.6; margin: 0;">
+          • Status: <strong>Interview Closed &amp; Automatically Submitted</strong><br>
+          • Trigger: <strong>Proctoring Violation: Session Switch!</strong><br>
+          • Outcome: <strong>Flagged for Recruiter Review</strong>
+        </p>
       </div>
-      <p class="violation-subtext" style="color: #64748b; font-size: 12px; margin-bottom: 20px;">
-        This incident has been permanently recorded and timestamped in your candidate proctoring report.
+      <p class="violation-subtext" style="color: #64748b; font-size: 12px; margin-bottom: 6px; line-height: 1.5;">
+        All code written up to this point and recorded proctoring video have been securely delivered to the recruiter. You may now close this browser window.
       </p>
-      <button id="returnToSessionBtn" class="btn-danger-full">
-        Return &amp; Resume Fullscreen Assessment
-      </button>
     </div>
   </div>
 

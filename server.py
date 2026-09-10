@@ -236,16 +236,22 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
 
         if query:
             score = scorecard.get("overall_score", 0)
-            update_op = {
-                "$set": {
-                    "codingStatus": "completed",
-                    "codingCompleted": True,
-                    "codingScore": score,
-                    "codingScorecard": scorecard,
-                    "codingCompletedAt": datetime.now(timezone.utc),
-                    "finalScore": score
-                }
+            meta = req.session_metadata or {}
+            update_fields: Dict[str, Any] = {
+                "codingStatus": "completed",
+                "codingCompleted": True,
+                "codingScore": score,
+                "codingScorecard": scorecard,
+                "codingCompletedAt": datetime.now(timezone.utc),
+                "finalScore": score
             }
+            if meta.get("terminated_due_to_violation"):
+                update_fields["codingViolationDetected"] = True
+                update_fields["codingViolationReason"] = meta.get("violation_reason", "Session switch detected")
+            if meta.get("coding_video_url"):
+                update_fields["codingVideoUrl"] = meta.get("coding_video_url")
+
+            update_op = {"$set": update_fields}
             if "email" in query and "_id" not in query and "codingToken" not in query:
                 res = candidates.update_many(query, update_op)
             else:

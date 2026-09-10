@@ -23,11 +23,14 @@ const state = {
   cameraActive: false,
   micActive: false,
   mediaStream: null,
+  mediaRecorder: null,
+  recordedChunks: [],
+  uploadedVideoUrl: null,
   audioContext: null,
   analyser: null,
   animFrameId: null,
   sessionSwitches: 0,
-  maxSwitches: 3,
+  maxSwitches: 1,
   lastScorecard: null
 };
 
@@ -470,6 +473,9 @@ function startAssessmentSession() {
     document.documentElement.requestFullscreen().catch(() => {});
   }
 
+  // Start recording the candidate's live session stream
+  startRecordingCodingSession();
+
   // Start 40-minute countdown timer
   startTimer();
 }
@@ -483,7 +489,154 @@ function handleHardwareLost(reason) {
 }
 
 /* ============================================================
-   2. Anti-Session Switch & Proctoring Integrity
+   2. Proctoring Video Recording
+   ============================================================ */
+function startRecordingCodingSession() {
+  try {
+    if (!state.mediaStream) {
+      console.warn("[Recording] No active mediaStream found to record");
+      return;
+    }
+    state.recordedChunks = [];
+
+    let options = {};
+    if (typeof MediaRecorder !== "undefined") {
+      const candidateTypes = [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=h264,opus",
+        "video/webm",
+        "video/mp4"
+      ];
+      for (const t of candidateTypes) {
+        if (MediaRecorder.isTypeSupported(t)) {
+          options = { mimeType: t };
+          break;
+        }
+      }
+      state.mediaRecorder = new MediaRecorder(state.mediaStream, options);
+
+      state.mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          state.recordedChunks.push(event.data);
+        }
+      };
+
+      // Collect chunks every 3 seconds for safe progressive buffering
+      state.mediaRecorder.start(3000);
+      console.log("[Recording] Live proctoring session recording started with options:", options);
+    }
+  } catch (err) {
+    console.warn("[Recording] MediaRecorder failed to start:", err);
+  }
+}
+
+async function stopAndUploadCodingVideo() {
+  if (state.uploadedVideoUrl) return state.uploadedVideoUrl;
+  if (!state.mediaRecorder || state.mediaRecorder.state === "inactive") {
+    if (state.recordedChunks && state.recordedChunks.length > 0) {
+      return await uploadRecordedBlob();
+    }
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    state.mediaRecorder.onstop = async () => {
+      try {
+        const url = await uploadRecordedBlob();
+        resolve(url);
+      } catch (e) {
+        console.error("[Recording] Error during upload:", e);
+        resolve(null);
+      }
+    };
+    try {
+      state.mediaRecorder.stop();
+    } catch (e) {
+      console.warn("[Recording] Error stopping mediaRecorder:", e);
+      resolve(null);
+    }
+  });
+}
+
+async function uploadRecordedBlob() {
+  if (!state.recordedChunks || state.recordedChunks.length === 0) {
+    console.warn("[Recording] No chunks captured to upload");
+    return null;
+  }
+
+  const mime = (state.mediaRecorder && state.mediaRecorder.mimeType) || "video/webm";
+  const blob = new Blob(state.recordedChunks, { type: mime });
+  console.log(`[Recording] Preparing blob upload: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`);
+
+  const nextApiBase = (typeof window !== "undefined" && window.location.origin && !window.location.origin.includes(":8000"))
+    ? window.location.origin
+    : "http://localhost:3000";
+
+  try {
+    const presignRes = await fetch(`${nextApiBase}/api/coding-assessment/upload-video`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: assessmentToken,
+        candidateId: assessmentCandidateId,
+        email: assessmentCandidateEmail
+      })
+    });
+
+    if (!presignRes.ok) {
+      console.error("[Recording] Presign endpoint returned status:", presignRes.status);
+      return null;
+    }
+
+    const { uploadUrl, videoUrl } = await presignRes.json();
+    if (!uploadUrl) {
+      console.error("[Recording] No uploadUrl returned");
+      return null;
+    }
+
+    console.log("[Recording] Uploading binary stream to S3...");
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": mime.split(";")[0] || "video/webm"
+      },
+      body: blob
+    });
+
+    if (!putRes.ok) {
+      console.error("[Recording] S3 PUT failed with status:", putRes.status);
+      return null;
+    }
+
+    console.log("[Recording] Successfully uploaded video to S3:", videoUrl);
+    state.uploadedVideoUrl = videoUrl;
+
+    // Ensure MongoDB candidate record has codingVideoUrl
+    try {
+      await fetch(`${nextApiBase}/api/coding-assessment/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId: assessmentCandidateId,
+          candidateEmail: assessmentCandidateEmail,
+          token: assessmentToken,
+          codingVideoUrl: videoUrl
+        })
+      });
+    } catch (syncErr) {
+      console.warn("[Recording] Sync videoUrl to Mongo note:", syncErr);
+    }
+
+    return videoUrl;
+  } catch (uploadErr) {
+    console.error("[Recording] Video upload error:", uploadErr);
+    return null;
+  }
+}
+
+/* ============================================================
+   3. Anti-Session Switch & Strict Proctoring Enforcement
    ============================================================ */
 let lastViolationTimestamp = 0;
 
@@ -491,11 +644,22 @@ function setupAntiSessionSwitch() {
   // 1. Detect Tab Switching or Minimizing
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && state.isAssessmentStarted && !state.isSubmitted) {
-      handleSessionViolation("Tab Switched or Browser Minimized");
+      handleSessionViolation("Proctoring Violation: Session Switch!");
     }
   });
 
-  // 2. Prevent accidental navigation or page refresh
+  // 2. Detect Window Defocus / App Switch
+  window.addEventListener("blur", () => {
+    if (state.isAssessmentStarted && !state.isSubmitted) {
+      setTimeout(() => {
+        if (!document.hasFocus() && state.isAssessmentStarted && !state.isSubmitted) {
+          handleSessionViolation("Proctoring Violation: Session Switch!");
+        }
+      }, 300);
+    }
+  });
+
+  // 3. Prevent accidental navigation or page refresh
   window.addEventListener("beforeunload", (e) => {
     if (state.isAssessmentStarted && !state.isSubmitted) {
       e.preventDefault();
@@ -503,20 +667,6 @@ function setupAntiSessionSwitch() {
       return e.returnValue;
     }
   });
-
-  // 3. Return to session modal button (only active when under violation threshold)
-  if (dom.returnToSessionBtn) {
-    dom.returnToSessionBtn.onclick = () => {
-      if (state.sessionSwitches >= state.maxSwitches) {
-        terminateInterviewOnMaxViolations("Exceeded allowed session switches");
-        return;
-      }
-      if (dom.switchWarningModal) dom.switchWarningModal.classList.add("hidden");
-      if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
-    };
-  }
 
   // 4. Disable Context Menu & Developer Tools Shortcuts
   document.addEventListener("contextmenu", (e) => {
@@ -534,7 +684,7 @@ function setupAntiSessionSwitch() {
     ) {
       if (state.isAssessmentStarted && !state.isSubmitted) {
         e.preventDefault();
-        handleSessionViolation("Attempted Developer Tools Shortcut");
+        handleSessionViolation("Proctoring Violation: Attempted Developer Tools");
       }
     }
   });
@@ -551,77 +701,67 @@ function handleSessionViolation(reason) {
   lastViolationTimestamp = now;
 
   state.sessionSwitches++;
-  console.warn(`[Proctoring Alert] Session violation (${reason}): #${state.sessionSwitches} / ${state.maxSwitches}`);
+  console.warn(`[Proctoring Alert] Session violation detected: ${reason}`);
 
   // Play warning beep
   playWarningBeep();
 
-  if (dom.violationCountBadge) {
-    dom.violationCountBadge.textContent = state.sessionSwitches;
-  }
-
-  // STRICT ENFORCEMENT: If candidate reaches maximum violations (3), immediately terminate interview!
-  if (state.sessionSwitches >= state.maxSwitches) {
-    terminateInterviewOnMaxViolations(reason);
-    return;
-  }
-
-  if (dom.switchWarningModal) {
-    dom.switchWarningModal.classList.remove("hidden");
-  }
+  // STRICT ENFORCEMENT: Any violation immediately closes and submits the interview!
+  terminateInterviewOnViolation(reason);
 }
 
-function terminateInterviewOnMaxViolations(reason) {
-  console.warn("[Proctoring Integrity] Assessment automatically terminated due to excessive violations:", reason);
+async function terminateInterviewOnViolation(reason) {
+  console.warn("[Proctoring Integrity] Assessment automatically closed & submitted due to violation:", reason);
   state.isAssessmentStarted = false;
   state.isSubmitted = true;
 
-  // Stop timer
+  // Stop timer immediately
   clearInterval(state.timerInterval);
 
-  // Stop camera & mic streams immediately
+  // Capture current editor code
+  if (state.challenges[state.currentIndex] && dom.codeEditor) {
+    state.userCode[state.challenges[state.currentIndex].id] = dom.codeEditor.value;
+  }
+
+  // Permanently lock code editor & buttons
+  if (dom.codeEditor) {
+    dom.codeEditor.disabled = true;
+    dom.codeEditor.readOnly = true;
+  }
+  if (dom.runCodeBtn) dom.runCodeBtn.disabled = true;
+  if (dom.submitNextBtn) dom.submitNextBtn.disabled = true;
+  if (dom.finishAssessmentBtn) {
+    dom.finishAssessmentBtn.disabled = true;
+    dom.finishAssessmentBtn.textContent = "Disqualified / Submitted";
+  }
+
+  // Hide floating proctor widget
+  if (dom.proctorWidget) dom.proctorWidget.style.display = "none";
+
+  // Show dedicated violation detected modal to candidate
+  if (dom.switchWarningModal) {
+    dom.switchWarningModal.classList.remove("hidden");
+  }
+
+  // Stop and upload recorded coding session video in background
+  let videoUrl = null;
+  try {
+    videoUrl = await stopAndUploadCodingVideo();
+  } catch (vErr) {
+    console.error("[Recording] Error uploading video on violation:", vErr);
+  }
+
+  // Stop camera & mic streams
   if (state.mediaStream) {
     state.mediaStream.getTracks().forEach(t => t.stop());
   }
 
-  // Permanently lock code editor & buttons
-  if (dom.codeEditor) dom.codeEditor.disabled = true;
-  if (dom.runCodeBtn) dom.runCodeBtn.disabled = true;
-  if (dom.submitNextBtn) dom.submitNextBtn.disabled = true;
-  if (dom.finishAssessmentBtn) dom.finishAssessmentBtn.disabled = true;
-
-  // Hide warning modal & floating proctor
-  if (dom.switchWarningModal) dom.switchWarningModal.classList.add("hidden");
-  if (dom.proctorWidget) dom.proctorWidget.style.display = "none";
-
-  // Display strict termination screen
-  if (dom.scorecardModal) {
-    dom.scorecardModal.classList.remove("hidden");
-  }
-  if (dom.scorecardBody) {
-    dom.scorecardBody.innerHTML = `
-      <div style="text-align: center; padding: 32px 16px;">
-        <div style="width: 64px; height: 64px; background: #fef2f2; border: 2px solid #fecaca; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 32px;">⛔</div>
-        <h3 style="color: #991b1b; font-size: 20px; font-weight: 800; margin-bottom: 8px;">Assessment Terminated: Proctoring Violation</h3>
-        <p style="color: #475569; font-size: 13.5px; line-height: 1.6; max-width: 480px; margin: 0 auto 18px;">
-          You exceeded the maximum allowed session switches (<strong>${state.sessionSwitches} / ${state.maxSwitches}</strong>). 
-          Under strict proctoring policy, this assessment has been permanently ended.
-        </p>
-        <div style="background: #fff1f2; border: 1px solid #fecdd3; border-radius: 10px; padding: 14px 18px; text-align: left; max-width: 480px; margin: 0 auto 18px;">
-          <div style="font-size: 11.5px; font-weight: 700; color: #9f1239; text-transform: uppercase; margin-bottom: 4px;">Violation Incident Details</div>
-          <p style="font-size: 12.5px; color: #881337; line-height: 1.5; margin: 0;">
-            • Total Logged Violations: <strong>${state.sessionSwitches}</strong><br>
-            • Last Recorded Trigger: <strong>${escapeHtml(reason)}</strong><br>
-            • Proctoring Outcome: <strong>Assessment Disqualified / Locked</strong>
-          </p>
-        </div>
-        <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">Your answers up to this point have been automatically transmitted to the recruiter.</p>
-      </div>
-    `;
-  }
-
-  // Automatically submit current code to backend
-  finishAssessment();
+  // Automatically submit current candidate code and flag violation
+  await submitAssessmentData({
+    violationDetected: true,
+    violationReason: reason,
+    codingVideoUrl: videoUrl || state.uploadedVideoUrl
+  });
 }
 
 function playWarningBeep() {
@@ -1078,8 +1218,47 @@ async function finishAssessment() {
   if (!confirmed) return;
 
   clearInterval(state.timerInterval);
+  state.isAssessmentStarted = false;
   state.isSubmitted = true;
+
+  // Lock the workspace
+  if (dom.codeEditor) {
+    dom.codeEditor.disabled = true;
+    dom.codeEditor.readOnly = true;
+  }
+  if (dom.runCodeBtn) dom.runCodeBtn.disabled = true;
+  if (dom.submitNextBtn) dom.submitNextBtn.disabled = true;
+  if (dom.finishAssessmentBtn) {
+    dom.finishAssessmentBtn.disabled = true;
+    dom.finishAssessmentBtn.textContent = "Submitted";
+  }
+  if (dom.proctorWidget) dom.proctorWidget.style.display = "none";
+
   openScorecardModal();
+
+  // Stop and upload video
+  let videoUrl = null;
+  try {
+    videoUrl = await stopAndUploadCodingVideo();
+  } catch (vidErr) {
+    console.error("[Recording] Error stopping and uploading video:", vidErr);
+  }
+
+  // Stop media tracks
+  if (state.mediaStream) {
+    state.mediaStream.getTracks().forEach(t => t.stop());
+  }
+
+  await submitAssessmentData({
+    violationDetected: false,
+    codingVideoUrl: videoUrl || state.uploadedVideoUrl
+  });
+}
+
+async function submitAssessmentData({ violationDetected = false, violationReason = "", codingVideoUrl = null } = {}) {
+  const nextApiBase = (typeof window !== "undefined" && window.location.origin && !window.location.origin.includes(":8000"))
+    ? window.location.origin
+    : "http://localhost:3000";
 
   try {
     const res = await fetch(`${CODING_API_BASE}/submit`, {
@@ -1098,42 +1277,49 @@ async function finishAssessment() {
           camera_monitored: state.cameraActive,
           audio_monitored: state.micActive,
           tab_switches: state.sessionSwitches,
-          duration_seconds: (40 * 60) - state.remainingSeconds
+          duration_seconds: (40 * 60) - state.remainingSeconds,
+          terminated_due_to_violation: violationDetected,
+          violation_reason: violationReason,
+          coding_video_url: codingVideoUrl || state.uploadedVideoUrl || undefined
         }
       })
     });
 
     const data = await res.json();
-    if (data.success && data.scorecard) {
+    const finalScore = (data.success && data.scorecard) ? (data.scorecard.overall_score || 0) : 0;
+    if (data.scorecard) {
       state.lastScorecard = data.scorecard;
-      renderScorecard(data.scorecard);
+    }
 
-      // Automatically sync scorecard to StaffGenie Next.js candidate record
-      if (assessmentCandidateId || assessmentToken || assessmentCandidateEmail) {
-        try {
-          const syncUrl = (typeof window !== "undefined" && window.location.origin && !window.location.origin.includes(":8000"))
-            ? `${window.location.origin}/api/coding-assessment/submit`
-            : "http://localhost:3000/api/coding-assessment/submit";
-          await fetch(syncUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              candidateId: assessmentCandidateId,
-              candidateEmail: assessmentCandidateEmail,
-              token: assessmentToken,
-              overallScore: data.scorecard.overall_score,
-              scorecard: data.scorecard
-            })
-          });
-          console.log("[StaffGenie Sync] Scorecard synchronized to StaffGenie candidate record.");
-        } catch (syncErr) {
-          console.warn("[StaffGenie Sync] Could not sync scorecard to StaffGenie:", syncErr);
-        }
+    // Automatically sync scorecard and violation details to StaffGenie Next.js candidate record
+    if (assessmentCandidateId || assessmentToken || assessmentCandidateEmail) {
+      try {
+        await fetch(`${nextApiBase}/api/coding-assessment/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidateId: assessmentCandidateId,
+            candidateEmail: assessmentCandidateEmail,
+            token: assessmentToken,
+            overallScore: finalScore,
+            scorecard: data.scorecard,
+            violationDetected: violationDetected,
+            violationReason: violationReason,
+            codingVideoUrl: codingVideoUrl || state.uploadedVideoUrl || undefined
+          })
+        });
+        console.log("[StaffGenie Sync] Scorecard & violation status synchronized to StaffGenie candidate record.");
+      } catch (syncErr) {
+        console.warn("[StaffGenie Sync] Could not sync scorecard to StaffGenie:", syncErr);
       }
+    }
+
+    if (!violationDetected && data.success && data.scorecard) {
+      renderScorecard(data.scorecard);
     }
   } catch (err) {
     console.error("Submission failed:", err);
-    if (dom.scorecardBody) {
+    if (!violationDetected && dom.scorecardBody) {
       dom.scorecardBody.innerHTML = `<p style="color: #e11d48;">Failed to submit assessment: ${escapeHtml(err.message)}</p>`;
     }
   }
