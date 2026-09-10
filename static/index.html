@@ -170,7 +170,7 @@
       <div class="hardware-body">
         <!-- Live Webcam Preview Window -->
         <div class="hardware-video-container">
-          <video id="hardwareVideo" autoplay playsinline muted></video>
+          <video id="hardwareVideo" autoplay playsinline webkit-playsinline muted></video>
           <div class="video-status-overlay" id="videoStatusOverlay">
             <span class="status-indicator-icon">📷</span>
             <p>Camera is currently off</p>
@@ -213,16 +213,16 @@
           </div>
         </div>
 
-        <div class="proctoring-notice-banner">
+        <div class="proctoring-notice-banner" id="proctoringNoticeBanner">
           ⚠️ <strong>Strict Policy:</strong> You cannot start or continue the interview without both camera and microphone enabled. Tab switching or minimizing this window is strictly monitored.
         </div>
       </div>
 
       <div class="hardware-footer">
-        <button id="enableHardwareBtn" class="btn-enable-hardware">
+        <button id="enableHardwareBtn" class="btn-enable-hardware" onclick="requestHardwarePermissions()">
           <span>📷</span> Turn On Camera &amp; Mic
         </button>
-        <button id="startAssessmentBtn" class="btn-start-assessment" disabled>
+        <button id="startAssessmentBtn" class="btn-start-assessment" onclick="startAssessmentSession()" disabled>
           <span>🔒</span> Start Assessment
         </button>
       </div>

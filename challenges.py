@@ -699,10 +699,17 @@ return evaluate_predictions(y_t, y_p)""",
     }
 ]
 
+import os
+import json
+from pathlib import Path
+
 # Session challenges registry (keyed by session_id or global current)
 _CHALLENGES_STORE: Dict[str, List[Dict[str, Any]]] = {
     "default": DEFAULT_CHALLENGES
 }
+
+CHALLENGES_CACHE_DIR = Path(__file__).resolve().parent / "submissions" / "challenges_cache"
+CHALLENGES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def set_active_challenges_from_jd(
@@ -711,14 +718,51 @@ def set_active_challenges_from_jd(
     difficulty: str = "Medium",
     session_id: str = "default"
 ) -> List[Dict[str, Any]]:
-    """Synthesizes or generates challenges tailored strictly to the JD."""
+    """Synthesizes or generates challenges tailored strictly to the JD and persists them."""
     generated = generate_challenges_from_jd(job_title, job_description, difficulty)
     _CHALLENGES_STORE[session_id] = generated
+
+    # Persist to disk cache so server restarts or multiple processes retain generated tasks
+    try:
+        cache_file = CHALLENGES_CACHE_DIR / f"{session_id}.json"
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(generated, f, indent=2)
+    except Exception as e:
+        print(f"[challenges] Warning: Could not cache challenges to disk: {e}")
+
     return generated
 
 
 def get_active_challenges(session_id: str = "default") -> List[Dict[str, Any]]:
-    return _CHALLENGES_STORE.get(session_id, DEFAULT_CHALLENGES)
+    # 1. Check in-memory store
+    if session_id in _CHALLENGES_STORE and _CHALLENGES_STORE[session_id]:
+        return _CHALLENGES_STORE[session_id]
+
+    # 2. Check disk cache
+    cache_file = CHALLENGES_CACHE_DIR / f"{session_id}.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    _CHALLENGES_STORE[session_id] = data
+                    return data
+        except Exception:
+            pass
+
+    # 3. Check any latest cached file if session_id is default or unmapped
+    all_cached = list(CHALLENGES_CACHE_DIR.glob("*.json"))
+    if all_cached:
+        latest_file = max(all_cached, key=os.path.getmtime)
+        try:
+            with open(latest_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception:
+            pass
+
+    return DEFAULT_CHALLENGES
 
 
 def get_public_challenges(session_id: str = "default") -> List[Dict[str, Any]]:
@@ -727,32 +771,74 @@ def get_public_challenges(session_id: str = "default") -> List[Dict[str, Any]]:
     public_list = []
     for c in active:
         public_list.append({
-            "id": c["id"],
-            "title": c["title"],
-            "category": c["category"],
-            "difficulty": c["difficulty"],
-            "time_limit_minutes": c["time_limit_minutes"],
-            "description_markdown": c["description_markdown"],
-            "starter_code": c["starter_code"],
-            "sample_test_cases": c["sample_test_cases"],
+            "id": c.get("id"),
+            "title": c.get("title"),
+            "category": c.get("category"),
+            "difficulty": c.get("difficulty"),
+            "time_limit_minutes": c.get("time_limit_minutes"),
+            "description_markdown": c.get("description_markdown"),
+            "starter_code": c.get("starter_code"),
+            "sample_test_cases": c.get("sample_test_cases", []),
         })
     return public_list
 
 
-def get_challenge_by_id(challenge_id: str, session_id: str = "default") -> Optional[Dict[str, Any]]:
-    # 1. Search in specified session
+def get_challenge_by_id(
+    challenge_id: str,
+    session_id: str = "default",
+    challenge_index: Optional[int] = None,
+    challenge_title: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     active = get_active_challenges(session_id)
+
+    # 1. Direct ID match in active session
     for c in active:
-        if c["id"] == challenge_id:
+        if c.get("id") == challenge_id:
             return c
-    # 2. Search in all active sessions in store
+
+    # 2. Direct Index match in active session (Task 1 -> index 0, Task 2 -> index 1, Task 3 -> index 2)
+    if challenge_index is not None and isinstance(challenge_index, int) and 0 <= challenge_index < len(active):
+        return active[challenge_index]
+
+    # 3. Title match in active session
+    if challenge_title:
+        title_clean = challenge_title.strip().lower()
+        for c in active:
+            c_title = (c.get("title") or "").strip().lower()
+            if title_clean in c_title or c_title in title_clean:
+                return c
+
+    # 4. Search across all in-memory sessions
     for sid, s_list in _CHALLENGES_STORE.items():
         for c in s_list:
-            if c["id"] == challenge_id:
+            if c.get("id") == challenge_id:
                 return c
-    # 3. Fallback to defaults
+            if challenge_title and (challenge_title.strip().lower() in (c.get("title") or "").strip().lower()):
+                return c
+
+    # 5. Search across all disk cache files
+    try:
+        for p in CHALLENGES_CACHE_DIR.glob("*.json"):
+            with open(p, "r", encoding="utf-8") as f:
+                disk_list = json.load(f)
+                if isinstance(disk_list, list):
+                    for c in disk_list:
+                        if c.get("id") == challenge_id:
+                            return c
+                        if challenge_title and (challenge_title.strip().lower() in (c.get("title") or "").strip().lower()):
+                            return c
+                    if challenge_index is not None and 0 <= challenge_index < len(disk_list):
+                        return disk_list[challenge_index]
+    except Exception:
+        pass
+
+    # 6. Fallback to DEFAULT_CHALLENGES
     for c in DEFAULT_CHALLENGES:
-        if c["id"] == challenge_id:
+        if c.get("id") == challenge_id:
             return c
+
+    if challenge_index is not None and 0 <= challenge_index < len(DEFAULT_CHALLENGES):
+        return DEFAULT_CHALLENGES[challenge_index]
+
     return None
 

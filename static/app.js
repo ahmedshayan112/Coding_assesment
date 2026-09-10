@@ -152,11 +152,65 @@ function initHardwareGate() {
       await requestHardwarePermissions();
     };
   }
+
+  // Auto-detect and warn if accessed over insecure HTTP or raw IP address
+  checkSecureContext();
+}
+
+function updateHardwareBanner(type, htmlContent) {
+  let banner = document.getElementById("proctoringNoticeBanner");
+  if (!banner) {
+    banner = document.querySelector(".proctoring-notice-banner");
+  }
+  if (!banner) return;
+
+  banner.innerHTML = htmlContent;
+  banner.className = "proctoring-notice-banner";
+  if (type === "error") {
+    banner.classList.add("banner-error");
+  } else if (type === "success") {
+    banner.classList.add("banner-success");
+  } else if (type === "info") {
+    banner.classList.add("banner-info");
+  }
+}
+
+function checkSecureContext() {
+  const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  
+  // If user opens raw IP or insecure HTTP, automatically redirect to canonical HTTPS domain
+  if (!isLocalhost && (window.location.protocol === "http:" || window.location.hostname === "16.16.162.122")) {
+    const targetUrl = `https://hire.neuralsurge.ai${window.location.pathname}${window.location.search}`;
+    console.warn("Insecure context or raw IP detected. Redirecting to HTTPS domain:", targetUrl);
+    updateHardwareBanner(
+      "info",
+      `🔒 <strong>Redirecting to Secure Connection...</strong><br>Webcams require HTTPS. Opening <a href="${targetUrl}" style="color: #2563eb; text-decoration: underline;">hire.neuralsurge.ai</a>`
+    );
+    setTimeout(() => {
+      window.location.href = targetUrl;
+    }, 600);
+    return false;
+  }
+  return true;
 }
 
 async function requestHardwarePermissions() {
+  // Check secure context first
+  const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (!isLocalhost && (window.location.protocol === "http:" || window.location.hostname === "16.16.162.122")) {
+    const targetUrl = `https://hire.neuralsurge.ai${window.location.pathname}${window.location.search}`;
+    window.location.href = targetUrl;
+    return;
+  }
+
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    alert("Your web browser does not support webcam or microphone capture. Please use Google Chrome, Edge, or Firefox.");
+    const msg = "Web browser does not expose camera/mic APIs. Please open this link in Google Chrome, Microsoft Edge, or Safari.";
+    console.error(msg);
+    updateHardwareBanner(
+      "error",
+      `❌ <strong>Browser Unsupported:</strong> Your browser does not support camera/mic capture in this window. Please open the link in <strong>Google Chrome</strong> or <strong>Safari</strong> on HTTPS.`
+    );
+    alert(msg);
     return;
   }
 
@@ -165,11 +219,65 @@ async function requestHardwarePermissions() {
       dom.enableHardwareBtn.disabled = true;
       dom.enableHardwareBtn.innerHTML = `<span>⏳</span> Requesting Devices...`;
     }
+    updateHardwareBanner("info", "⏳ <strong>Action Required:</strong> Please tap <strong>'Allow'</strong> on your browser prompt to enable Camera and Microphone.");
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
-      audio: true
-    });
+    let stream = null;
+
+    // Strategy 1: Mobile and desktop friendly ideal constraints
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+    } catch (tier1Err) {
+      console.warn("Tier 1 getUserMedia failed, trying boolean constraints fallback...", tier1Err);
+      // Strategy 2: Simple boolean constraints for older devices and mobile browsers
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+      } catch (tier2Err) {
+        console.warn("Tier 2 combined getUserMedia failed, attempting separate requests...", tier2Err);
+        // Strategy 3: Request Video & Audio separately in case one sensor has strict permissions
+        let vStream = null;
+        let aStream = null;
+        try {
+          vStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        } catch (vErr) {
+          console.error("Separate Video request failed:", vErr);
+        }
+        try {
+          aStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (aErr) {
+          console.error("Separate Audio request failed:", aErr);
+        }
+
+        if (vStream && aStream) {
+          stream = new MediaStream([
+            ...vStream.getVideoTracks(),
+            ...aStream.getAudioTracks()
+          ]);
+        } else if (vStream && !aStream) {
+          const err = new Error("MICROPHONE_DENIED");
+          err.name = "NotAllowedError";
+          throw err;
+        } else if (!vStream && aStream) {
+          const err = new Error("CAMERA_DENIED");
+          err.name = "NotAllowedError";
+          throw err;
+        } else {
+          throw tier2Err;
+        }
+      }
+    }
 
     state.mediaStream = stream;
 
@@ -177,7 +285,20 @@ async function requestHardwarePermissions() {
     const videoTracks = stream.getVideoTracks();
     if (videoTracks.length > 0 && videoTracks[0].readyState === "live") {
       state.cameraActive = true;
-      if (dom.hardwareVideo) dom.hardwareVideo.srcObject = stream;
+      if (dom.hardwareVideo) {
+        dom.hardwareVideo.srcObject = stream;
+        dom.hardwareVideo.setAttribute("playsinline", "true");
+        dom.hardwareVideo.setAttribute("webkit-playsinline", "true");
+        dom.hardwareVideo.muted = true;
+        try {
+          const playPromise = dom.hardwareVideo.play();
+          if (playPromise !== undefined) {
+            playPromise.catch(e => console.warn("Video playback autoplay notice:", e));
+          }
+        } catch (e) {
+          console.warn("Error playing video preview:", e);
+        }
+      }
       if (dom.videoStatusOverlay) dom.videoStatusOverlay.classList.add("active");
       if (dom.camBadge) {
         dom.camBadge.textContent = "Ready ✓";
@@ -217,8 +338,13 @@ async function requestHardwarePermissions() {
         dom.startAssessmentBtn.innerHTML = `<span>🚀</span> Start Assessment`;
       }
       if (dom.enableHardwareBtn) {
+        dom.enableHardwareBtn.disabled = false;
         dom.enableHardwareBtn.innerHTML = `<span>✓</span> Devices Connected`;
       }
+      updateHardwareBanner(
+        "success",
+        "✅ <strong>Camera & Microphone Connected!</strong> Hardware verified. Click 'Start Assessment' below to begin."
+      );
     }
   } catch (err) {
     console.error("Hardware permission denied or error:", err);
@@ -226,17 +352,37 @@ async function requestHardwarePermissions() {
       dom.enableHardwareBtn.disabled = false;
       dom.enableHardwareBtn.innerHTML = `<span>🔄</span> Try Again`;
     }
-    if (dom.camBadge) {
-      dom.camBadge.textContent = "Denied ✗";
-      dom.camBadge.className = "device-state-badge state-denied";
+
+    let errorDetail = "Camera & Microphone access is mandatory.";
+    if (err.message === "CAMERA_DENIED" || (err.name === "NotAllowedError" && !state.cameraActive && state.micActive)) {
+      if (dom.camBadge) {
+        dom.camBadge.textContent = "Denied ✗";
+        dom.camBadge.className = "device-state-badge state-denied";
+      }
+      errorDetail = "❌ <strong>Camera Access Blocked:</strong> Click the camera/lock icon in your browser URL bar, set Camera to <strong>'Allow'</strong>, then click 'Try Again'.";
+    } else if (err.message === "MICROPHONE_DENIED" || (err.name === "NotAllowedError" && state.cameraActive && !state.micActive)) {
+      if (dom.micBadge) {
+        dom.micBadge.textContent = "Denied ✗";
+        dom.micBadge.className = "device-state-badge state-denied";
+      }
+      errorDetail = "❌ <strong>Microphone Access Blocked:</strong> Click the microphone/lock icon in your browser URL bar, set Microphone to <strong>'Allow'</strong>, then click 'Try Again'.";
+    } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+      errorDetail = "⚠️ <strong>Device in Use:</strong> Your webcam or mic is being used by another program (e.g. Zoom, Teams, Google Meet, or another browser tab). Please close other apps and click 'Try Again'.";
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      errorDetail = "⚠️ <strong>Hardware Not Found:</strong> No webcam or microphone was detected on this device. Please connect a webcam/mic and click 'Try Again'.";
+    } else {
+      if (dom.camBadge) {
+        dom.camBadge.textContent = "Denied ✗";
+        dom.camBadge.className = "device-state-badge state-denied";
+      }
+      if (dom.micBadge) {
+        dom.micBadge.textContent = "Denied ✗";
+        dom.micBadge.className = "device-state-badge state-denied";
+      }
+      errorDetail = "❌ <strong>Permission Blocked:</strong> Tap the lock icon 🔒 next to the web address, allow Camera & Microphone permissions, and click 'Try Again'.";
     }
-    if (dom.micBadge) {
-      dom.micBadge.textContent = "Denied ✗";
-      dom.micBadge.className = "device-state-badge state-denied";
-    }
-    alert(
-      "Permission Denied: Camera and microphone access are mandatory to take this technical interview.\n\nPlease click the camera icon in your browser address bar to allow permissions, then click 'Try Again'."
-    );
+
+    updateHardwareBanner("error", errorDetail);
   }
 }
 
@@ -339,6 +485,8 @@ function handleHardwareLost(reason) {
 /* ============================================================
    2. Anti-Session Switch & Proctoring Integrity
    ============================================================ */
+let lastViolationTimestamp = 0;
+
 function setupAntiSessionSwitch() {
   // 1. Detect Tab Switching or Minimizing
   document.addEventListener("visibilitychange", () => {
@@ -347,14 +495,7 @@ function setupAntiSessionSwitch() {
     }
   });
 
-  // 2. Detect Window Blur (clicking outside the interview)
-  window.addEventListener("blur", () => {
-    if (state.isAssessmentStarted && !state.isSubmitted) {
-      handleSessionViolation("Window Lost Focus / External Tool Active");
-    }
-  });
-
-  // 3. Prevent accidental navigation or page refresh
+  // 2. Prevent accidental navigation or page refresh
   window.addEventListener("beforeunload", (e) => {
     if (state.isAssessmentStarted && !state.isSubmitted) {
       e.preventDefault();
@@ -363,9 +504,13 @@ function setupAntiSessionSwitch() {
     }
   });
 
-  // 4. Return to session modal button
+  // 3. Return to session modal button (only active when under violation threshold)
   if (dom.returnToSessionBtn) {
     dom.returnToSessionBtn.onclick = () => {
+      if (state.sessionSwitches >= state.maxSwitches) {
+        terminateInterviewOnMaxViolations("Exceeded allowed session switches");
+        return;
+      }
       if (dom.switchWarningModal) dom.switchWarningModal.classList.add("hidden");
       if (document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(() => {});
@@ -373,7 +518,7 @@ function setupAntiSessionSwitch() {
     };
   }
 
-  // 5. Disable Context Menu & Developer Tools Shortcuts
+  // 4. Disable Context Menu & Developer Tools Shortcuts
   document.addEventListener("contextmenu", (e) => {
     if (state.isAssessmentStarted && !state.isSubmitted) {
       e.preventDefault();
@@ -396,8 +541,17 @@ function setupAntiSessionSwitch() {
 }
 
 function handleSessionViolation(reason) {
+  if (!state.isAssessmentStarted || state.isSubmitted) return;
+
+  const now = Date.now();
+  // Cooldown to avoid rapid double-counting (must be at least 2.5s apart)
+  if (now - lastViolationTimestamp < 2500) {
+    return;
+  }
+  lastViolationTimestamp = now;
+
   state.sessionSwitches++;
-  console.warn(`[Proctoring Alert] Session violation (${reason}): #${state.sessionSwitches}`);
+  console.warn(`[Proctoring Alert] Session violation (${reason}): #${state.sessionSwitches} / ${state.maxSwitches}`);
 
   // Play warning beep
   playWarningBeep();
@@ -406,9 +560,68 @@ function handleSessionViolation(reason) {
     dom.violationCountBadge.textContent = state.sessionSwitches;
   }
 
+  // STRICT ENFORCEMENT: If candidate reaches maximum violations (3), immediately terminate interview!
+  if (state.sessionSwitches >= state.maxSwitches) {
+    terminateInterviewOnMaxViolations(reason);
+    return;
+  }
+
   if (dom.switchWarningModal) {
     dom.switchWarningModal.classList.remove("hidden");
   }
+}
+
+function terminateInterviewOnMaxViolations(reason) {
+  console.warn("[Proctoring Integrity] Assessment automatically terminated due to excessive violations:", reason);
+  state.isAssessmentStarted = false;
+  state.isSubmitted = true;
+
+  // Stop timer
+  clearInterval(state.timerInterval);
+
+  // Stop camera & mic streams immediately
+  if (state.mediaStream) {
+    state.mediaStream.getTracks().forEach(t => t.stop());
+  }
+
+  // Permanently lock code editor & buttons
+  if (dom.codeEditor) dom.codeEditor.disabled = true;
+  if (dom.runCodeBtn) dom.runCodeBtn.disabled = true;
+  if (dom.submitNextBtn) dom.submitNextBtn.disabled = true;
+  if (dom.finishAssessmentBtn) dom.finishAssessmentBtn.disabled = true;
+
+  // Hide warning modal & floating proctor
+  if (dom.switchWarningModal) dom.switchWarningModal.classList.add("hidden");
+  if (dom.proctorWidget) dom.proctorWidget.style.display = "none";
+
+  // Display strict termination screen
+  if (dom.scorecardModal) {
+    dom.scorecardModal.classList.remove("hidden");
+  }
+  if (dom.scorecardBody) {
+    dom.scorecardBody.innerHTML = `
+      <div style="text-align: center; padding: 32px 16px;">
+        <div style="width: 64px; height: 64px; background: #fef2f2; border: 2px solid #fecaca; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 32px;">⛔</div>
+        <h3 style="color: #991b1b; font-size: 20px; font-weight: 800; margin-bottom: 8px;">Assessment Terminated: Proctoring Violation</h3>
+        <p style="color: #475569; font-size: 13.5px; line-height: 1.6; max-width: 480px; margin: 0 auto 18px;">
+          You exceeded the maximum allowed session switches (<strong>${state.sessionSwitches} / ${state.maxSwitches}</strong>). 
+          Under strict proctoring policy, this assessment has been permanently ended.
+        </p>
+        <div style="background: #fff1f2; border: 1px solid #fecdd3; border-radius: 10px; padding: 14px 18px; text-align: left; max-width: 480px; margin: 0 auto 18px;">
+          <div style="font-size: 11.5px; font-weight: 700; color: #9f1239; text-transform: uppercase; margin-bottom: 4px;">Violation Incident Details</div>
+          <p style="font-size: 12.5px; color: #881337; line-height: 1.5; margin: 0;">
+            • Total Logged Violations: <strong>${state.sessionSwitches}</strong><br>
+            • Last Recorded Trigger: <strong>${escapeHtml(reason)}</strong><br>
+            • Proctoring Outcome: <strong>Assessment Disqualified / Locked</strong>
+          </p>
+        </div>
+        <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">Your answers up to this point have been automatically transmitted to the recruiter.</p>
+      </div>
+    `;
+  }
+
+  // Automatically submit current code to backend
+  finishAssessment();
 }
 
 function playWarningBeep() {
@@ -747,7 +960,9 @@ async function runSampleCode() {
       body: JSON.stringify({
         challenge_id: challenge.id,
         code: code,
-        session_id: assessmentToken || "default"
+        session_id: assessmentToken || "default",
+        challenge_index: state.currentIndex,
+        challenge_title: challenge.title || ""
       })
     });
 
@@ -817,6 +1032,7 @@ function renderExecutionResults(execution) {
       </div>
     </div>
   `).join("");
+  }
 }
 
 function resetExecutionPanel() {
@@ -1052,4 +1268,14 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-window.addEventListener("DOMContentLoaded", init);
+// Expose critical hardware handlers globally for inline HTML button triggers
+window.requestHardwarePermissions = requestHardwarePermissions;
+window.startAssessmentSession = startAssessmentSession;
+
+// Ensure initialization runs reliably regardless of script loading timing
+if (document.readyState === "loading") {
+  window.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
+

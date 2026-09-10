@@ -64,6 +64,8 @@ class RunCodeRequest(BaseModel):
     challenge_id: str
     code: str
     session_id: Optional[str] = "default"
+    challenge_index: Optional[int] = None
+    challenge_title: Optional[str] = None
 
 
 class SubmitAssessmentRequest(BaseModel):
@@ -140,7 +142,12 @@ def run_code_against_sample_tests(req: RunCodeRequest):
     Executes candidate code against visible sample test cases.
     Candidates can run this N number of times to verify their logic.
     """
-    challenge = get_challenge_by_id(req.challenge_id, session_id=req.session_id or "default")
+    challenge = get_challenge_by_id(
+        req.challenge_id,
+        session_id=req.session_id or "default",
+        challenge_index=req.challenge_index,
+        challenge_title=req.challenge_title
+    )
     if not challenge:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
