@@ -282,6 +282,44 @@ def get_assessment_result(submission_id: str):
     raise HTTPException(status_code=404, detail="Submission scorecard not found")
 
 
+@app.get("/api/results/by-token/{token}")
+def get_assessment_result_by_token(token: str):
+    """Retrieves an evaluated assessment scorecard by coding token / session id."""
+    # Check in-memory STORED_RESULTS
+    for sub_id, sc in STORED_RESULTS.items():
+        if sc.get("session_id") == token:
+            return {"success": True, "scorecard": sc}
+
+    # Check submissions directory
+    if SUBMISSIONS_DIR.exists():
+        for file in SUBMISSIONS_DIR.glob("*.json"):
+            try:
+                with open(file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("session_id") == token:
+                        return {"success": True, "scorecard": data}
+            except Exception:
+                continue
+
+    # Fallback check directly in MongoDB Recruitment database
+    try:
+        import pymongo
+        mongo_uri = os.environ.get(
+            "MONGODB_URI",
+            "mongodb+srv://char3d_userA:NS.AI2026@cluster0.vgyhy5m.mongodb.net/Recruitment?retryWrites=true&w=majority"
+        )
+        db_name = os.environ.get("MONGODB_DB", "Recruitment")
+        client = pymongo.MongoClient(mongo_uri, serverSelectionTimeoutMS=4000)
+        db = client[db_name]
+        candidate = db["candidates"].find_one({"codingToken": token})
+        if candidate and candidate.get("codingScorecard"):
+            return {"success": True, "scorecard": candidate["codingScorecard"]}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Scorecard not found for token")
+
+
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "service": "coding-assessment-sandbox", "version": "2.0.0"}
