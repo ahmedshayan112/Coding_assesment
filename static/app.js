@@ -114,10 +114,10 @@ async function init() {
   // Lock session token in sessionStorage to prevent tampering or switching
   if (assessmentToken) {
     const existingToken = sessionStorage.getItem("staffgenie_locked_token");
-    if (!existingToken) {
+    if (!existingToken || existingToken !== assessmentToken) {
       sessionStorage.setItem("staffgenie_locked_token", assessmentToken);
-    } else if (existingToken !== assessmentToken) {
-      console.warn("Session token lock active. Active session:", existingToken);
+      state.sessionSwitches = 0;
+      state.isSubmitted = false;
     }
   }
 

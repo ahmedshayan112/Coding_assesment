@@ -226,6 +226,8 @@ def evaluate_full_assessment(
 
     return {
         "submission_id": f"sub-{int(datetime.now(timezone.utc).timestamp())}",
+        "session_id": session_id,
+        "session_metadata": session_metadata,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
         "candidate_name": candidate_name,
         "candidate_email": candidate_email,

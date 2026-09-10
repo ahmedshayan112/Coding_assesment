@@ -170,13 +170,18 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
     Also runs LLM architectural review for senior feedback.
     """
     session_id = req.session_id or "default"
+    meta = req.session_metadata or {}
     scorecard = evaluate_full_assessment(
         submissions=req.submissions,
         candidate_name=req.candidate_name,
         candidate_email=req.candidate_email,
-        session_metadata=req.session_metadata,
+        session_metadata=meta,
         session_id=session_id
     )
+    scorecard["session_id"] = session_id
+    scorecard["session_metadata"] = meta
+    if req.candidate_id:
+        scorecard["candidate_id"] = req.candidate_id
 
     # Enhance scorecard with LLM review for questions with code
     active_challenges = get_active_challenges(session_id)
@@ -236,18 +241,24 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
 
         if query:
             score = scorecard.get("overall_score", 0)
-            meta = req.session_metadata or {}
+            is_violation = bool(meta.get("terminated_due_to_violation"))
+            
+            existing_candidate = candidates.find_one(query)
+            interview_score = existing_candidate.get("interviewScore") if existing_candidate else None
+            final_score = score
+            if interview_score is not None:
+                final_score = int(round((interview_score * 0.5) + (score * 0.5)))
+
             update_fields: Dict[str, Any] = {
                 "codingStatus": "completed",
                 "codingCompleted": True,
                 "codingScore": score,
                 "codingScorecard": scorecard,
                 "codingCompletedAt": datetime.now(timezone.utc),
-                "finalScore": score
+                "finalScore": final_score,
+                "codingViolationDetected": is_violation,
+                "codingViolationReason": meta.get("violation_reason", "Session switch detected") if is_violation else ""
             }
-            if meta.get("terminated_due_to_violation"):
-                update_fields["codingViolationDetected"] = True
-                update_fields["codingViolationReason"] = meta.get("violation_reason", "Session switch detected")
             if meta.get("coding_video_url"):
                 update_fields["codingVideoUrl"] = meta.get("coding_video_url")
 
@@ -256,7 +267,7 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
                 res = candidates.update_many(query, update_op)
             else:
                 res = candidates.update_one(query, update_op)
-            print(f"[MongoDB Sync] Updated candidate {query}: modified={res.modified_count}, score={score}")
+            print(f"[MongoDB Sync] Updated candidate {query}: modified={res.modified_count}, score={score}, violation={is_violation}")
     except Exception as e:
         print(f"[MongoDB Sync] Warning: Could not sync to MongoDB directly: {e}")
 
@@ -284,19 +295,21 @@ def get_assessment_result(submission_id: str):
 
 @app.get("/api/results/by-token/{token}")
 def get_assessment_result_by_token(token: str):
-    """Retrieves an evaluated assessment scorecard by coding token / session id."""
-    # Check in-memory STORED_RESULTS
-    for sub_id, sc in STORED_RESULTS.items():
-        if sc.get("session_id") == token:
+    """Retrieves latest evaluated assessment scorecard by coding token / session id."""
+    # Check in-memory STORED_RESULTS in reverse order (newest first)
+    for sub_id in reversed(list(STORED_RESULTS.keys())):
+        sc = STORED_RESULTS[sub_id]
+        if sc.get("session_id") == token or sc.get("session_metadata", {}).get("token") == token:
             return {"success": True, "scorecard": sc}
 
-    # Check submissions directory
+    # Check submissions directory sorted by modified time descending (newest first!)
     if SUBMISSIONS_DIR.exists():
-        for file in SUBMISSIONS_DIR.glob("*.json"):
+        files = sorted(SUBMISSIONS_DIR.glob("*.json"), key=os.path.getmtime, reverse=True)
+        for file in files:
             try:
                 with open(file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if data.get("session_id") == token:
+                    if data.get("session_id") == token or data.get("session_metadata", {}).get("token") == token:
                         return {"success": True, "scorecard": data}
             except Exception:
                 continue
@@ -318,6 +331,47 @@ def get_assessment_result_by_token(token: str):
         pass
 
     raise HTTPException(status_code=404, detail="Scorecard not found for token")
+
+
+@app.get("/api/results/by-email/{email}")
+def get_assessment_result_by_email(email: str):
+    """Retrieves latest evaluated assessment scorecard by candidate email."""
+    target_email = email.strip().lower()
+    # Check in-memory STORED_RESULTS in reverse order (newest first)
+    for sub_id in reversed(list(STORED_RESULTS.keys())):
+        sc = STORED_RESULTS[sub_id]
+        if sc.get("candidate_email", "").strip().lower() == target_email:
+            return {"success": True, "scorecard": sc}
+
+    # Check submissions directory sorted by modified time descending (newest first!)
+    if SUBMISSIONS_DIR.exists():
+        files = sorted(SUBMISSIONS_DIR.glob("*.json"), key=os.path.getmtime, reverse=True)
+        for file in files:
+            try:
+                with open(file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("candidate_email", "").strip().lower() == target_email:
+                        return {"success": True, "scorecard": data}
+            except Exception:
+                continue
+
+    # Fallback check directly in MongoDB
+    try:
+        import pymongo
+        mongo_uri = os.environ.get(
+            "MONGODB_URI",
+            "mongodb+srv://char3d_userA:NS.AI2026@cluster0.vgyhy5m.mongodb.net/Recruitment?retryWrites=true&w=majority"
+        )
+        db_name = os.environ.get("MONGODB_DB", "Recruitment")
+        client = pymongo.MongoClient(mongo_uri, serverSelectionTimeoutMS=4000)
+        db = client[db_name]
+        candidate = db["candidates"].find_one({"email": target_email})
+        if candidate and candidate.get("codingScorecard"):
+            return {"success": True, "scorecard": candidate["codingScorecard"]}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Scorecard not found for email")
 
 
 @app.get("/api/health")
