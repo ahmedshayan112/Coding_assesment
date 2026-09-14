@@ -28,6 +28,7 @@
       <div class="session-info">
         <span class="badge-role" id="roleBadge">Technical Engineer</span>
         <span id="candidateInfoBadge" style="display:none;" class="badge-candidate"></span>
+        <span class="badge-proctor-notice">🔒 Tab Switching Prohibited</span>
       </div>
     </div>
 
@@ -49,6 +50,12 @@
       </button>
     </div>
   </header>
+
+  <!-- Persistent Session Integrity Banner -->
+  <div class="session-integrity-banner" id="sessionIntegrityBanner">
+    <span class="banner-pulse-icon">⚠️</span>
+    <span><strong>STRICT PROCTORING:</strong> Changing the session, switching browser tabs, or minimizing this window is strictly prohibited. Any session switch will automatically terminate and submit your assessment.</span>
+  </div>
 
   <!-- Main Split Sandbox Workspace -->
   <main class="sandbox-container">
@@ -213,8 +220,24 @@
           </div>
         </div>
 
+        <!-- Hardware Status Message -->
         <div class="proctoring-notice-banner" id="proctoringNoticeBanner">
-          ⚠️ <strong>Strict Policy:</strong> You cannot start or continue the interview without both camera and microphone enabled. Tab switching or minimizing this window is strictly monitored.
+          📷 <strong>Device Verification:</strong> Please click <strong>"Turn On Camera & Mic"</strong> below to enable your devices.
+        </div>
+
+        <!-- Mandatory Session Integrity Disclaimer Box -->
+        <div class="proctoring-disclaimer-box" id="sessionDisclaimerBox">
+          <div class="disclaimer-title-row">
+            <span class="disclaimer-badge">⚠️ STRICT DISCLAIMER</span>
+            <strong class="disclaimer-heading">Changing Session is Prohibited</strong>
+          </div>
+          <p class="disclaimer-text">
+            <strong>Changing the session during the coding interview is strictly prohibited.</strong> Switching browser tabs, minimizing this window, or navigating to another application will be immediately detected by AI proctoring and will cause your assessment to be <strong>instantly terminated, disqualified, and submitted</strong> to the recruiter.
+          </p>
+          <label class="disclaimer-checkbox-label" id="agreementLabel">
+            <input type="checkbox" id="sessionAgreementCheck" onchange="onAgreementToggled()" />
+            <span>I acknowledge and agree: changing the session or switching tabs is strictly prohibited.</span>
+          </label>
         </div>
       </div>
 

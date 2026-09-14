@@ -334,20 +334,17 @@ async function requestHardwarePermissions() {
       };
     }
 
-    // 3. Unlock Start Assessment button if both are verified
+    // 3. Unlock Start Assessment button if both are verified and policy acknowledged
     if (state.cameraActive && state.micActive) {
-      if (dom.startAssessmentBtn) {
-        dom.startAssessmentBtn.disabled = false;
-        dom.startAssessmentBtn.innerHTML = `<span>🚀</span> Start Assessment`;
-      }
       if (dom.enableHardwareBtn) {
         dom.enableHardwareBtn.disabled = false;
         dom.enableHardwareBtn.innerHTML = `<span>✓</span> Devices Connected`;
       }
       updateHardwareBanner(
         "success",
-        "✅ <strong>Camera & Microphone Connected!</strong> Hardware verified. Click 'Start Assessment' below to begin."
+        "✅ <strong>Camera & Microphone Connected!</strong> Please acknowledge the session policy below to begin."
       );
+      checkCanStartAssessment();
     }
   } catch (err) {
     console.error("Hardware permission denied or error:", err);
@@ -441,7 +438,41 @@ function initAudioMeter(stream) {
   }
 }
 
+function checkCanStartAssessment() {
+  const checkbox = document.getElementById("sessionAgreementCheck");
+  const isAgreed = checkbox ? checkbox.checked : false;
+  if (dom.startAssessmentBtn) {
+    if (state.cameraActive && state.micActive && isAgreed) {
+      dom.startAssessmentBtn.disabled = false;
+      dom.startAssessmentBtn.innerHTML = `<span>🚀</span> Start Assessment`;
+    } else {
+      dom.startAssessmentBtn.disabled = true;
+      if (!isAgreed && state.cameraActive && state.micActive) {
+        dom.startAssessmentBtn.innerHTML = `<span>✍️</span> Acknowledge Policy`;
+      } else {
+        dom.startAssessmentBtn.innerHTML = `<span>🔒</span> Start Assessment`;
+      }
+    }
+  }
+}
+
+window.onAgreementToggled = function() {
+  checkCanStartAssessment();
+};
+
 function startAssessmentSession() {
+  const checkbox = document.getElementById("sessionAgreementCheck");
+  if (checkbox && !checkbox.checked) {
+    const box = document.getElementById("sessionDisclaimerBox");
+    if (box) {
+      box.classList.remove("shake-highlight");
+      void box.offsetWidth;
+      box.classList.add("shake-highlight");
+    }
+    alert("Please acknowledge and agree: changing the session or switching tabs during the interview is strictly prohibited.");
+    return;
+  }
+
   if (!state.cameraActive || !state.micActive || !state.mediaStream) {
     alert("Camera and Microphone must both be active before you can start the interview.");
     return;
