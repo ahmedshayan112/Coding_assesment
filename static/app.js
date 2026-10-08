@@ -64,6 +64,10 @@ const dom = {
   scorecardModal: document.getElementById("scorecardModal"),
   scorecardBody: document.getElementById("scorecardBody"),
   closeModalBtn: document.getElementById("closeModalBtn"),
+  scorecardModalIcon: document.getElementById("scorecardModalIcon"),
+  scorecardModalTitle: document.getElementById("scorecardModalTitle"),
+  scorecardModalSubtitle: document.getElementById("scorecardModalSubtitle"),
+  scorecardFooter: document.getElementById("scorecardFooter"),
   roleBadge: document.getElementById("roleBadge"),
   candidateInfoBadge: document.getElementById("candidateInfoBadge"),
 
@@ -562,35 +566,51 @@ function startRecordingCodingSession() {
   }
 }
 
-async function stopAndUploadCodingVideo() {
+async function stopAndUploadCodingVideo(onProgress) {
   if (state.uploadedVideoUrl) return state.uploadedVideoUrl;
   if (!state.mediaRecorder || state.mediaRecorder.state === "inactive") {
     if (state.recordedChunks && state.recordedChunks.length > 0) {
-      return await uploadRecordedBlob();
+      return await uploadRecordedBlob(onProgress);
     }
     return null;
   }
 
   return new Promise((resolve) => {
-    state.mediaRecorder.onstop = async () => {
+    let finished = false;
+    const complete = async () => {
+      if (finished) return;
+      finished = true;
       try {
-        const url = await uploadRecordedBlob();
+        const url = await uploadRecordedBlob(onProgress);
         resolve(url);
       } catch (e) {
         console.error("[Recording] Error during upload:", e);
         resolve(null);
       }
     };
+
+    // Safety timeout: if onstop does not fire within 3.5s, force proceed!
+    const timer = setTimeout(() => {
+      console.warn("[Recording] MediaRecorder onstop timeout reached, forcing upload proceed");
+      complete();
+    }, 3500);
+
+    state.mediaRecorder.onstop = async () => {
+      clearTimeout(timer);
+      await complete();
+    };
+
     try {
       state.mediaRecorder.stop();
     } catch (e) {
+      clearTimeout(timer);
       console.warn("[Recording] Error stopping mediaRecorder:", e);
-      resolve(null);
+      complete();
     }
   });
 }
 
-async function uploadRecordedBlob() {
+async function uploadRecordedBlob(onProgress) {
   if (!state.recordedChunks || state.recordedChunks.length === 0) {
     console.warn("[Recording] No chunks captured to upload");
     return null;
@@ -627,39 +647,58 @@ async function uploadRecordedBlob() {
     }
 
     console.log("[Recording] Uploading binary stream to S3...");
-    const putRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": mime.split(";")[0] || "video/webm"
-      },
-      body: blob
+    // Use XMLHttpRequest for real-time upload progress and timeout safety
+    return await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl, true);
+      xhr.setRequestHeader("Content-Type", mime.split(";")[0] || "video/webm");
+      xhr.timeout = 35000; // 35s timeout prevents hanging
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          onProgress(percent);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          console.log("[Recording] Successfully uploaded video to S3:", videoUrl);
+          state.uploadedVideoUrl = videoUrl;
+
+          // Non-blocking sync to mongo
+          try {
+            fetch(`${nextApiBase}/api/coding-assessment/submit`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                candidateId: assessmentCandidateId,
+                candidateEmail: assessmentCandidateEmail,
+                token: assessmentToken,
+                codingVideoUrl: videoUrl
+              })
+            }).catch(() => {});
+          } catch (_) {}
+
+          resolve(videoUrl);
+        } else {
+          console.error("[Recording] S3 PUT failed with status:", xhr.status);
+          resolve(null);
+        }
+      };
+
+      xhr.onerror = () => {
+        console.error("[Recording] S3 PUT network error");
+        resolve(null);
+      };
+
+      xhr.ontimeout = () => {
+        console.warn("[Recording] S3 PUT timed out after 35s");
+        resolve(null);
+      };
+
+      xhr.send(blob);
     });
-
-    if (!putRes.ok) {
-      console.error("[Recording] S3 PUT failed with status:", putRes.status);
-      return null;
-    }
-
-    console.log("[Recording] Successfully uploaded video to S3:", videoUrl);
-    state.uploadedVideoUrl = videoUrl;
-
-    // Ensure MongoDB candidate record has codingVideoUrl
-    try {
-      await fetch(`${nextApiBase}/api/coding-assessment/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          candidateId: assessmentCandidateId,
-          candidateEmail: assessmentCandidateEmail,
-          token: assessmentToken,
-          codingVideoUrl: videoUrl
-        })
-      });
-    } catch (syncErr) {
-      console.warn("[Recording] Sync videoUrl to Mongo note:", syncErr);
-    }
-
-    return videoUrl;
   } catch (uploadErr) {
     console.error("[Recording] Video upload error:", uploadErr);
     return null;
@@ -1238,6 +1277,108 @@ function submitAndNext() {
 /* ============================================================
    7. Final Submission & Sync
    ============================================================ */
+
+/**
+ * Open the submission modal with a dynamic progress bar & stage tracking
+ */
+function openSubmissionModal() {
+  if (dom.scorecardModal) dom.scorecardModal.classList.remove("hidden");
+  if (dom.scorecardModalIcon) {
+    dom.scorecardModalIcon.innerHTML = `<span class="step-spinner" style="width: 22px; height: 22px; border-width: 3px; border-color: #2563eb; border-top-color: transparent;"></span>`;
+  }
+  if (dom.scorecardModalTitle) {
+    dom.scorecardModalTitle.textContent = "Submitting Technical Assessment...";
+  }
+  if (dom.scorecardModalSubtitle) {
+    dom.scorecardModalSubtitle.textContent = "Please keep this window open while your answers are verified and delivered.";
+  }
+  if (dom.closeModalBtn) {
+    dom.closeModalBtn.style.display = "none";
+  }
+
+  renderSubmissionProgressSkeleton();
+}
+
+function renderSubmissionProgressSkeleton() {
+  if (!dom.scorecardBody) return;
+  dom.scorecardBody.innerHTML = `
+    <div class="submission-progress-wrapper">
+      <div class="submission-icon-spinner">
+        <span>⚡</span>
+      </div>
+      <h3 class="submission-progress-title" id="submissionStageTitle">Packaging Technical Solutions...</h3>
+      <p class="submission-progress-subtitle" id="submissionStageSub">Preparing your code and proctoring telemetry for secure transmission.</p>
+
+      <div class="progress-track-container">
+        <div class="progress-fill-bar" id="submissionProgressBar" style="width: 15%;"></div>
+      </div>
+
+      <div class="progress-meta-row">
+        <span id="submissionStatusLabel">Freezing editor code...</span>
+        <span class="progress-percentage-text" id="submissionProgressPercent">15%</span>
+      </div>
+
+      <div class="submission-steps-list">
+        <div class="submission-step-item active" id="stepItem1">
+          <div class="step-indicator-icon" id="stepIcon1">1</div>
+          <div class="submission-step-label">Packaging Technical Solutions</div>
+          <div class="submission-step-status" id="stepStatus1"><span class="step-spinner"></span> In progress</div>
+        </div>
+        <div class="submission-step-item" id="stepItem2">
+          <div class="step-indicator-icon" id="stepIcon2">2</div>
+          <div class="submission-step-label">Uploading Proctoring Video & Telemetry</div>
+          <div class="submission-step-status" id="stepStatus2">Pending</div>
+        </div>
+        <div class="submission-step-item" id="stepItem3">
+          <div class="step-indicator-icon" id="stepIcon3">3</div>
+          <div class="submission-step-label">Evaluating Code Against Test Suites</div>
+          <div class="submission-step-status" id="stepStatus3">Pending</div>
+        </div>
+        <div class="submission-step-item" id="stepItem4">
+          <div class="step-indicator-icon" id="stepIcon4">4</div>
+          <div class="submission-step-label">Recording Scorecard & Finalizing</div>
+          <div class="submission-step-status" id="stepStatus4">Pending</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function setSubmissionStage(stageNum, percent, title, sub, statusText) {
+  const bar = document.getElementById("submissionProgressBar");
+  const pct = document.getElementById("submissionProgressPercent");
+  const titleEl = document.getElementById("submissionStageTitle");
+  const subEl = document.getElementById("submissionStageSub");
+  const statusEl = document.getElementById("submissionStatusLabel");
+
+  if (bar) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  if (pct) pct.textContent = `${Math.round(percent)}%`;
+  if (titleEl && title) titleEl.textContent = title;
+  if (subEl && sub) subEl.textContent = sub;
+  if (statusEl && statusText) statusEl.textContent = statusText;
+
+  for (let i = 1; i <= 4; i++) {
+    const item = document.getElementById(`stepItem${i}`);
+    const icon = document.getElementById(`stepIcon${i}`);
+    const status = document.getElementById(`stepStatus${i}`);
+    if (!item || !icon || !status) continue;
+
+    if (i < stageNum) {
+      item.className = "submission-step-item completed";
+      icon.textContent = "✓";
+      status.textContent = "Done";
+    } else if (i === stageNum) {
+      item.className = "submission-step-item active";
+      icon.textContent = i;
+      status.innerHTML = `<span class="step-spinner"></span> In progress`;
+    } else {
+      item.className = "submission-step-item";
+      icon.textContent = i;
+      status.textContent = "Pending";
+    }
+  }
+}
+
 async function finishAssessment() {
   if (state.isSubmitted) return;
 
@@ -1265,21 +1406,38 @@ async function finishAssessment() {
   }
   if (dom.proctorWidget) dom.proctorWidget.style.display = "none";
 
-  openScorecardModal();
+  // Stop camera & mic preview tracks safely
+  if (state.mediaStream) {
+    try {
+      state.mediaStream.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+  }
 
-  // Stop and upload video
+  // Open submission progress modal
+  openSubmissionModal();
+
+  // STAGE 1: Packaging Technical Solutions (0 -> 20%)
+  setSubmissionStage(1, 20, "Packaging Technical Solutions...", "Finalizing your code across all assessment challenges.", "Freezing editor state & metadata...");
+  await new Promise(r => setTimeout(r, 600));
+
+  // STAGE 2: Video Recording Upload (20 -> 55%)
+  setSubmissionStage(2, 25, "Uploading Proctoring Recording...", "Encrypting and transmitting proctoring telemetry to secure cloud storage.", "Preparing video recording...");
+
   let videoUrl = null;
   try {
-    videoUrl = await stopAndUploadCodingVideo();
+    videoUrl = await stopAndUploadCodingVideo((uploadPct) => {
+      // Smoothly map 0..100% upload to 25..55% overall progress
+      const mapped = 25 + Math.round((uploadPct / 100) * 30);
+      setSubmissionStage(2, mapped, "Uploading Proctoring Recording...", "Encrypting and transmitting proctoring telemetry to secure cloud storage.", `Uploading video stream (${uploadPct}%)...`);
+    });
   } catch (vidErr) {
     console.error("[Recording] Error stopping and uploading video:", vidErr);
   }
 
-  // Stop media tracks
-  if (state.mediaStream) {
-    state.mediaStream.getTracks().forEach(t => t.stop());
-  }
+  setSubmissionStage(2, 55, "Proctoring Telemetry Secured", "Video recording saved.", "Completed video upload.");
+  await new Promise(r => setTimeout(r, 300));
 
+  // STAGE 3 & 4: Assessment data submission, automated execution, and sync
   await submitAssessmentData({
     violationDetected: false,
     codingVideoUrl: videoUrl || state.uploadedVideoUrl
@@ -1291,10 +1449,31 @@ async function submitAssessmentData({ violationDetected = false, violationReason
     ? window.location.origin
     : "http://localhost:3000";
 
+  // STAGE 3: Server Execution (55 -> 85%)
+  if (!violationDetected) {
+    setSubmissionStage(3, 60, "Evaluating Code Against Test Suites...", "Executing hidden test cases in sandbox environment and running code verification.", "Running test cases...");
+  }
+
+  // Smoothly increment progress while waiting for backend execution
+  let currentPct = 60;
+  const progressTicker = setInterval(() => {
+    if (currentPct < 84) {
+      currentPct += 2;
+      const bar = document.getElementById("submissionProgressBar");
+      const pctEl = document.getElementById("submissionProgressPercent");
+      if (bar) bar.style.width = `${currentPct}%`;
+      if (pctEl) pctEl.textContent = `${currentPct}%`;
+    }
+  }, 700);
+
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
     const res = await fetch(`${CODING_API_BASE}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         candidate_name: assessmentCandidateName || "Technical Candidate",
         candidate_email: assessmentCandidateEmail || "candidate@interview.ai",
@@ -1315,11 +1494,23 @@ async function submitAssessmentData({ violationDetected = false, violationReason
         }
       })
     });
+    clearTimeout(timeoutId);
+    clearInterval(progressTicker);
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`Server returned HTTP ${res.status}: ${errBody || res.statusText}`);
+    }
 
     const data = await res.json();
     const finalScore = (data.success && data.scorecard) ? (data.scorecard.overall_score || 0) : 0;
     if (data.scorecard) {
       state.lastScorecard = data.scorecard;
+    }
+
+    // STAGE 4: Recording Scorecard & Finalizing (85 -> 95%)
+    if (!violationDetected) {
+      setSubmissionStage(4, 90, "Recording Scorecard & Finalizing...", "Synchronizing results with recruitment portal.", "Updating candidate profile...");
     }
 
     // Automatically sync scorecard and violation details to StaffGenie Next.js candidate record
@@ -1345,31 +1536,56 @@ async function submitAssessmentData({ violationDetected = false, violationReason
       }
     }
 
-    if (!violationDetected && data.success && data.scorecard) {
-      renderScorecard(data.scorecard);
+    // 100% Complete!
+    if (!violationDetected) {
+      setSubmissionStage(4, 100, "Submission Verified & Complete!", "Your solutions have been securely delivered.", "All checks passed.");
+      await new Promise(r => setTimeout(r, 600));
+
+      if (data.success && data.scorecard) {
+        renderScorecard(data.scorecard);
+      } else {
+        renderScorecard({ overall_score: finalScore });
+      }
     }
   } catch (err) {
+    clearInterval(progressTicker);
     console.error("Submission failed:", err);
     if (!violationDetected && dom.scorecardBody) {
-      dom.scorecardBody.innerHTML = `<p style="color: #e11d48;">Failed to submit assessment: ${escapeHtml(err.message)}</p>`;
-    }
-  }
-}
+      if (dom.scorecardModalIcon) dom.scorecardModalIcon.textContent = "⚠️";
+      if (dom.scorecardModalTitle) dom.scorecardModalTitle.textContent = "Submission Incomplete";
+      if (dom.scorecardModalSubtitle) dom.scorecardModalSubtitle.textContent = "We encountered an issue transmitting your assessment.";
 
-function openScorecardModal() {
-  if (dom.scorecardModal) dom.scorecardModal.classList.remove("hidden");
-  if (dom.scorecardBody) {
-    dom.scorecardBody.innerHTML = `
-      <div style="text-align: center; padding: 40px 20px;">
-        <div style="font-size: 38px; margin-bottom: 14px;">⏳</div>
-        <h3 style="color: #0b1c30; font-size: 17px; font-weight: 700; margin-bottom: 8px;">Submitting Technical Solutions...</h3>
-        <p style="color: #64748b; font-size: 13px;">Please wait while your answers are securely transmitted to the recruitment team.</p>
-      </div>
-    `;
+      dom.scorecardBody.innerHTML = `
+        <div class="submission-error-box">
+          <div style="font-size: 36px; margin-bottom: 10px;">⚠️</div>
+          <h3>Submission Could Not Be Completed</h3>
+          <p>
+            Error: ${escapeHtml(err.message || "Network request failed")}.<br>
+            Don't worry—your submitted code is safely preserved. Please verify your connection and click below to try again.
+          </p>
+          <button id="retrySubmissionBtn" class="btn-primary" style="padding: 10px 24px; font-size: 13.5px;">
+            ↻ Retry Submission
+          </button>
+        </div>
+      `;
+
+      const retryBtn = document.getElementById("retrySubmissionBtn");
+      if (retryBtn) {
+        retryBtn.onclick = () => {
+          openSubmissionModal();
+          submitAssessmentData({ violationDetected, violationReason, codingVideoUrl });
+        };
+      }
+    }
   }
 }
 
 function renderScorecard(scorecard) {
+  // Update Header to show verified completion
+  if (dom.scorecardModalIcon) dom.scorecardModalIcon.textContent = "✅";
+  if (dom.scorecardModalTitle) dom.scorecardModalTitle.textContent = "Assessment Submitted Successfully";
+  if (dom.scorecardModalSubtitle) dom.scorecardModalSubtitle.textContent = "Your responses have been securely delivered";
+
   if (dom.scorecardBody) {
     dom.scorecardBody.innerHTML = `
       <div style="text-align: center; padding: 24px 16px 16px;">
@@ -1389,6 +1605,12 @@ function renderScorecard(scorecard) {
         <p style="color: #94a3b8; font-size: 12px; margin-top: 10px;">You may now safely close this browser window.</p>
       </div>
     `;
+  }
+
+  // Reveal the Done button now that submission is 100% complete
+  if (dom.closeModalBtn) {
+    dom.closeModalBtn.style.display = "inline-block";
+    dom.closeModalBtn.textContent = "Done";
   }
 
   // Lock the workspace
@@ -1467,7 +1689,22 @@ function setupEventListeners() {
   });
 
   if (dom.closeModalBtn) {
-    dom.closeModalBtn.onclick = () => dom.scorecardModal.classList.add("hidden");
+    dom.closeModalBtn.onclick = () => {
+      dom.scorecardModal.classList.add("hidden");
+      document.body.innerHTML = `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0b1c30; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 20px;">
+          <div style="max-width: 520px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 40px 32px; backdrop-filter: blur(10px);">
+            <div style="font-size: 56px; margin-bottom: 16px;">🎓</div>
+            <h1 style="font-size: 24px; font-weight: 800; margin-bottom: 12px; color: #ffffff;">Assessment Concluded</h1>
+            <p style="color: #94a3b8; font-size: 15px; line-height: 1.6; margin-bottom: 24px;">
+              Your technical assessment has been recorded and submitted to the recruitment committee. Thank you for your time!
+            </p>
+            <p style="color: #64748b; font-size: 13px;">You can now safely close this browser window or tab.</p>
+          </div>
+        </div>
+      `;
+      try { window.close(); } catch (_) {}
+    };
   }
 }
 

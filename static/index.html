@@ -293,10 +293,10 @@
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title-group">
-          <span class="completion-icon">✅</span>
+          <span class="completion-icon" id="scorecardModalIcon">⏳</span>
           <div>
-            <h2>Assessment Submitted Successfully</h2>
-            <p class="modal-subtitle">Your responses have been securely delivered</p>
+            <h2 id="scorecardModalTitle">Submitting Technical Solutions...</h2>
+            <p class="modal-subtitle" id="scorecardModalSubtitle">Please wait while your answers are securely transmitted to the recruitment team.</p>
           </div>
         </div>
       </div>
@@ -307,8 +307,8 @@
         </div>
       </div>
 
-      <div class="modal-footer">
-        <button id="closeModalBtn" class="btn-primary">Done</button>
+      <div class="modal-footer" id="scorecardFooter">
+        <button id="closeModalBtn" class="btn-primary" style="display: none;">Done</button>
       </div>
     </div>
   </div>

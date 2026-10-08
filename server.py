@@ -187,7 +187,7 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
     active_challenges = get_active_challenges(session_id)
     challenge_map = {c["id"]: c for c in active_challenges}
 
-    for q in scorecard.get("questions", []):
+    def _review_question(q):
         cid = q.get("challenge_id")
         ch = challenge_map.get(cid)
         if ch:
@@ -202,8 +202,17 @@ def submit_final_assessment(req: SubmitAssessmentRequest):
                     test_results_summary=summary
                 )
                 q["llm_review"] = llm_review
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[LLM Review] Review skipped for {cid}: {e}")
+
+    questions = scorecard.get("questions", [])
+    if questions:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(len(questions), 4)) as executor:
+                list(executor.map(_review_question, questions))
+        except Exception as pool_err:
+            print(f"[LLM Review Pool] Error running parallel reviews: {pool_err}")
 
     sub_id = scorecard["submission_id"]
     STORED_RESULTS[sub_id] = scorecard

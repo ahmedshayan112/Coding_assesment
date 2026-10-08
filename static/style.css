@@ -928,6 +928,225 @@ body {
   background: #1e2e99;
 }
 
+/* Submission Progress & Status System */
+.submission-progress-wrapper {
+  padding: 16px 10px 10px;
+  text-align: center;
+}
+
+.submission-icon-spinner {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #eef2ff;
+  border: 2px solid #c7d2fe;
+  color: #142175;
+  font-size: 24px;
+  animation: pulse-ring 2s infinite ease-in-out;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4);
+    transform: scale(0.97);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(37, 99, 235, 0);
+    transform: scale(1.03);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    transform: scale(0.97);
+  }
+}
+
+.submission-progress-title {
+  color: #0b1c30;
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.submission-progress-subtitle {
+  color: #64748b;
+  font-size: 13px;
+  margin-bottom: 22px;
+}
+
+.progress-track-container {
+  background: #e2e8f0;
+  border-radius: 999px;
+  height: 12px;
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+  margin-bottom: 8px;
+}
+
+.progress-fill-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #142175 0%, #2563eb 50%, #059669 100%);
+  border-radius: 999px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-fill-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: shimmer 1.8s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 600;
+  margin-bottom: 22px;
+  padding: 0 2px;
+}
+
+.progress-percentage-text {
+  color: #142175;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.submission-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.submission-step-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: #64748b;
+  transition: all 0.2s ease;
+}
+
+.submission-step-item.active {
+  color: #0b1c30;
+  font-weight: 700;
+}
+
+.submission-step-item.completed {
+  color: #059669;
+}
+
+.step-indicator-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  flex-shrink: 0;
+  background: #e2e8f0;
+  color: #94a3b8;
+  font-weight: 800;
+  transition: all 0.25s ease;
+}
+
+.submission-step-item.active .step-indicator-icon {
+  background: #142175;
+  color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(20, 33, 117, 0.2);
+}
+
+.submission-step-item.completed .step-indicator-icon {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.submission-step-label {
+  flex: 1;
+}
+
+.submission-step-status {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.submission-step-item.active .submission-step-status {
+  color: #2563eb;
+}
+
+.submission-step-item.completed .submission-step-status {
+  color: #059669;
+}
+
+.step-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #2563eb;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.submission-error-box {
+  text-align: center;
+  padding: 24px 18px;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 12px;
+  margin-top: 10px;
+}
+
+.submission-error-box h3 {
+  color: #9f1239;
+  font-size: 16px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.submission-error-box p {
+  color: #be123c;
+  font-size: 13px;
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
+
 /* Scorecard UI */
 .overall-score-banner {
   background: linear-gradient(135deg, #eff6ff, #f0fdf4);
